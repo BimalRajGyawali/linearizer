@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from textwrap import indent
 from typing import Dict, List, Optional, Tuple
 
 
@@ -65,6 +66,35 @@ def find_changed_functions(parsed_files):
     return changed
 
 
+from pathlib import Path
+
+def save_function(path: str, name: str, body: str, file_path: str = "functions.json"):
+    """
+    Save a function body into a JSON file under the key 'path.name'.
+    If the JSON file exists, it is loaded and updated. Otherwise, created fresh.
+    """
+
+    key = f"{path}.{name}"
+    json_path = Path(file_path)
+
+    # Load existing JSON or start empty
+    if json_path.exists():
+        try:
+            with json_path.open("r") as f:
+                data = json.load(f)
+        except json.JSONDecodeError:
+            data = {}
+    else:
+        data = {}
+
+    # Update entry
+    data[key] = body
+
+    # Write back
+    with json_path.open("w") as f:
+        json.dump(data, f, indent=2)
+
+
 def extract_functions_from_file(path: str, function_names: set):
     text = Path(path).read_text().splitlines()
     results = {}
@@ -76,7 +106,8 @@ def extract_functions_from_file(path: str, function_names: set):
         if m:
             name = m.group(1)
             if current_name and current_body:
-                results[current_name] = "\n".join(current_body)
+                results[f"{path}.{current_name}"] = "\n".join(current_body)
+                save_function(path, current_name, "\n".join(current_body))
 
             current_name = name if name in function_names else None
             current_body = [line] if current_name else []
@@ -86,7 +117,8 @@ def extract_functions_from_file(path: str, function_names: set):
             current_body.append(line)
 
     if current_name:
-        results[current_name] = "\n".join(current_body)
+        results[f"{path}.{current_name}"] = "\n".join(current_body)
+        save_function(path, current_name, "\n".join(current_body))
 
     return results
 
@@ -115,14 +147,38 @@ def find_calls_ast(body: str) -> List[str]:
     return list(found)
 
 
+def save_graph(graph: Dict[str, List[str]], file_path: str = "call_graph.json"):
+    """
+    Save a call graph (dict of str → list[str]) as formatted JSON.
+    Overwrites the file each time to keep it valid.
+    """
+    path = Path(file_path)
+
+    with path.open("w") as f:
+        json.dump(graph, f, indent=2)
+
+
 def build_changed_call_graph(function_bodies: Dict[str,str]) -> Dict[str,List[str]]:
     changed_names = set(function_bodies.keys())
     graph = {}
     for fn, body in function_bodies.items():
         calls = find_calls_ast(body)
-        # only keep calls to other changed functions
         graph[fn] = calls # [c for c in calls if c in changed_names]
+
+    # save_graph(graph, "call_graph.json")
+
     return graph
+
+
+
+def save_parent_functions(parents: List[str], file_path: str = "parent_functions.json"):
+    """
+    Save the list of top-level parent functions to a JSON file.
+    Overwrites the file each time.
+    """
+    path = Path(file_path)
+    with path.open("w") as f:
+        json.dump(parents, f, indent=2)
 
 
 def find_parent_functions_changed_only(graph: Dict[str,List[str]]) -> List[str]:
@@ -139,6 +195,7 @@ def find_parent_functions_changed_only(graph: Dict[str,List[str]]) -> List[str]:
                 called_by_changed.add(c)
 
     parents = all_funcs - called_by_changed
+    save_parent_functions(list(parents), "parent_functions.json")
     return list(parents)
 
 def build_flows(repo):
@@ -162,7 +219,7 @@ def main(argv: Optional[List[str]] = None):
 
         call_graph = build_changed_call_graph(all_func_bodies)
         parent_funcs = find_parent_functions_changed_only(call_graph)
-        print(parent_funcs)
+        # print(parent_funcs)
     except Exception as e:
 
         print(json.dumps({"error": str(e)}), file=sys.stdout)
