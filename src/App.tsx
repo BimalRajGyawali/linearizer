@@ -10,9 +10,13 @@ export default function App() {
 
   // Sidebar width and dragging
   const [sidebarWidth, setSidebarWidth] = useState(280);
+  const [collapsed, setCollapsed] = useState(false);
+  const lastSidebarWidth = useRef(sidebarWidth);
   const [draggingOverlay, setDraggingOverlay] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
+
+  const COLLAPSED_WIDTH = 40; // Minimum clickable width
 
   // Toggle function expansion
   const toggle = (id: string) => {
@@ -34,6 +38,18 @@ export default function App() {
     fetchFlows();
   }, []);
 
+  // Sidebar collapse/expand
+  const toggleSidebar = () => {
+    if (!collapsed) {
+      lastSidebarWidth.current = sidebarWidth;
+      setSidebarWidth(COLLAPSED_WIDTH);
+      setCollapsed(true);
+    } else {
+      setSidebarWidth(lastSidebarWidth.current || 280);
+      setCollapsed(false);
+    }
+  };
+
   // Drag handlers
   const startDrag = () => {
     dragging.current = true;
@@ -43,10 +59,11 @@ export default function App() {
 
   const onMouseMove = (e: MouseEvent) => {
     if (!dragging.current) return;
-    const newWidth = e.clientX;
-    if (newWidth >= 200 && newWidth <= 600) {
-      setSidebarWidth(newWidth);
-    }
+    let newWidth = e.clientX;
+    if (newWidth < COLLAPSED_WIDTH) newWidth = COLLAPSED_WIDTH;
+    if (newWidth > 600) newWidth = 600;
+    setSidebarWidth(newWidth);
+    if (collapsed && newWidth > COLLAPSED_WIDTH) setCollapsed(false);
   };
 
   const onMouseUp = () => {
@@ -62,7 +79,7 @@ export default function App() {
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
     };
-  }, []);
+  }, [collapsed]);
 
   // Render function body recursively
   const renderFunctionBody = (
@@ -183,17 +200,43 @@ export default function App() {
         ref={sidebarRef}
         style={{
           width: sidebarWidth,
-          minWidth: 200,
+          minWidth: COLLAPSED_WIDTH,
           maxWidth: 600,
           backgroundColor: "#f3f4f6",
           borderRight: "1px solid #e5e7eb",
           display: "flex",
           flexDirection: "column",
+          transition: "width 0.2s",
+          position: "relative",
         }}
       >
-        <div style={{ flex: 1, overflowY: "auto" }}>
-          <FileExplorer />
+        {/* Collapse Button (subtle) */}
+        <div
+          onClick={toggleSidebar}
+          style={{
+            height: 28,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+            userSelect: "none",
+            color: "#888",
+            fontSize: 14,
+            opacity: 0.5,
+            transition: "opacity 0.2s",
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
+          onMouseLeave={(e) => (e.currentTarget.style.opacity = "0.5")}
+        >
+          {collapsed ? "➡" : "⬅"}
         </div>
+
+        {/* FileExplorer scrolls */}
+        {!collapsed && (
+          <div style={{ flex: 1, overflowY: "auto" }}>
+            <FileExplorer />
+          </div>
+        )}
       </div>
 
       {/* DRAG HANDLE */}
