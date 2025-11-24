@@ -48,13 +48,38 @@ fn get_flows() -> Result<Value, String> {
     Ok(combined)
 }
 
+#[tauri::command]
+fn get_file_tree() -> Result<Value, String> {
+    println!("[flowlens] get_file_tree");
+
+    let repo = "/home/bimal/Documents/ucsd/research/code/trap";
+    let python = std::env::var("PYTHON_BIN").unwrap_or("python3".to_string());
+    let script_path = "../tools/get_file_tree.py";
+
+    let output = Command::new(&python)
+        .arg(script_path)
+        .arg("--root")
+        .arg(repo)
+        .output()
+        .map_err(|e| format!("failed to run python: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    if !output.status.success() {
+        return Err(format!("python error: {}", stdout));
+    }
+
+    let tree: Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("invalid json: {}", e))?;
+    Ok(tree)
+}
+
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     println!("[flowlens] run: starting tauri builder");
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, get_flows])
+        .invoke_handler(tauri::generate_handler![greet, get_flows, get_file_tree])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
