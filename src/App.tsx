@@ -1,5 +1,4 @@
-// App.tsx
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { motion, AnimatePresence } from "framer-motion";
 import FileExplorer from "./components/FileExplorer";
@@ -9,15 +8,19 @@ export default function App() {
   const [functions, setFunctions] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
-  // Toggle accordion or inline function
+  // SIDEBAR WIDTH
+  const [sidebarWidth, setSidebarWidth] = useState(280);
+  const sidebarRef = useRef<HTMLDivElement>(null);
+  const dragging = useRef(false);
+
+  // ---------- FUNCTIONS ----------
   const toggle = (id: string) => {
     setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
-  // Fetch parents and functions JSON from backend
   const fetchFlows = async () => {
     try {
-      const result: any = await invoke("get_flows"); // should return { parents: [], functions: {} }
+      const result: any = await invoke("get_flows");
       setParents(result.parents || []);
       setFunctions(result.functions || {});
     } catch (e) {
@@ -29,7 +32,37 @@ export default function App() {
     fetchFlows();
   }, []);
 
-  // Recursive rendering of function body
+  // ---------- SIDEBAR RESIZE HANDLERS ----------
+  const onMouseMove = (e: MouseEvent) => {
+    if (!dragging.current) return;
+    const newWidth = e.clientX;
+    if (newWidth >= 200 && newWidth <= 600) {
+      setSidebarWidth(newWidth);
+    }
+  };
+
+  const onMouseUp = () => {
+    dragging.current = false;
+    document.body.style.cursor = "default";
+    document.body.style.userSelect = "auto";
+  };
+
+  const startDrag = () => {
+    dragging.current = true;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  };
+
+  useEffect(() => {
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, []);
+
+  // ---------- RENDER FUNCTION BODY ----------
   const renderFunctionBody = (
     body: string,
     prefixId: string,
@@ -45,7 +78,6 @@ export default function App() {
           let lineRendered = false;
 
           for (const fnName of Object.keys(functions)) {
-            // Skip if line does not include the function or it's the def line
             if (!line) continue;
             if (line.includes(fnName) && !line.trim().startsWith("def ")) {
               const id = `${prefixId}:${fnName}:${idx}`;
@@ -53,23 +85,21 @@ export default function App() {
               const before = parts[0] ?? "";
               const after = parts.slice(1).join(fnName) ?? "";
               const isExpanded = !!expanded[id];
-
               lineRendered = true;
 
               return (
-                <div key={id} style={{ marginBottom: "6px", position: "relative" }}>
-                  {/* Clickable function call */}
+                <div key={id} style={{ marginBottom: 6, position: "relative" }}>
                   <div
                     style={{
                       display: "inline-block",
-                      borderRadius: "4px",
+                      borderRadius: 4,
                       backgroundColor: isExpanded ? "rgba(0,0,0,0.05)" : "transparent",
                       fontWeight: 600,
                       cursor: "pointer",
                       fontFamily: "Fira Code, monospace",
-                      fontSize: "14px",
-                      marginTop: "2px",
-                      marginBottom: "2px",
+                      fontSize: 14,
+                      marginTop: 2,
+                      marginBottom: 2,
                       opacity: isExpanded ? 0.85 : 1,
                       lineHeight: "1.5rem",
                       whiteSpace: "pre-wrap",
@@ -83,7 +113,6 @@ export default function App() {
                     <span>{after}</span>
                   </div>
 
-                  {/* Expanded inline function */}
                   <AnimatePresence>
                     {isExpanded && functions[fnName] && (
                       <motion.div
@@ -114,7 +143,6 @@ export default function App() {
             }
           }
 
-          // If line wasn't a function call, just render normally
           if (!lineRendered) {
             return (
               <div
@@ -131,7 +159,6 @@ export default function App() {
               </div>
             );
           }
-
           return null;
         })}
       </div>
@@ -143,28 +170,39 @@ export default function App() {
     <div
       style={{
         display: "flex",
-        height: "100vh", // ensures full-height so sidebar and center align
+        height: "100vh",
         width: "100vw",
         overflow: "hidden",
         fontFamily: "Inter, sans-serif",
       }}
     >
-      {/* LEFT SIDEBAR */}
+      {/* SIDEBAR */}
       <div
+        ref={sidebarRef}
         style={{
-          width: 280,
-          minWidth: 220,
-          maxWidth: 360,
+          width: sidebarWidth,
+          minWidth: 200,
+          maxWidth: 600,
           backgroundColor: "#f3f4f6",
           borderRight: "1px solid #e5e7eb",
           overflowY: "auto",
-          padding: 12,
+          padding: 8,
         }}
       >
         <FileExplorer />
       </div>
 
-      {/* CENTER PANEL (Flows UI) */}
+      {/* DRAG HANDLE */}
+      <div
+        onMouseDown={startDrag}
+        style={{
+          width: 4,
+          cursor: "col-resize",
+          backgroundColor: "transparent",
+        }}
+      ></div>
+
+      {/* CENTER PANEL */}
       <div
         style={{
           flex: 1,
@@ -181,7 +219,6 @@ export default function App() {
 
           return (
             <div key={parent} style={{ marginBottom: 12 }}>
-              {/* Parent function clickable */}
               <div
                 style={{
                   backgroundColor: "#e5e7eb",
