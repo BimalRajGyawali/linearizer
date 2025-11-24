@@ -177,30 +177,35 @@ export default function App() {
       }}
     >
       {/* SIDEBAR */}
-      <div
-        ref={sidebarRef}
-        style={{
-          width: sidebarWidth,
-          minWidth: 200,
-          maxWidth: 600,
-          backgroundColor: "#f3f4f6",
-          borderRight: "1px solid #e5e7eb",
-          overflowY: "auto",
-          padding: 8,
-        }}
-      >
-        <FileExplorer />
-      </div>
+<div
+  style={{
+    width: sidebarWidth,
+    minWidth: 200,
+    maxWidth: 600,
+    backgroundColor: "#f3f4f6",
+    borderRight: "1px solid #e5e7eb",
+    // Remove scroll from here
+    padding: 8,
+    display: "flex",
+    flexDirection: "column",
+  }}
+>
+  {/* FileExplorer scrolls itself */}
+  <div style={{ flex: 1, overflowY: "auto" }}>
+    <FileExplorer />
+  </div>
+</div>
 
-      {/* DRAG HANDLE */}
-      <div
-        onMouseDown={startDrag}
-        style={{
-          width: 4,
-          cursor: "col-resize",
-          backgroundColor: "transparent",
-        }}
-      ></div>
+{/* DRAG HANDLE */}
+<div
+  onMouseDown={startDrag}
+  style={{
+    width: 4,
+    cursor: "col-resize",
+    backgroundColor: "transparent", // transparent, no color on drag
+    zIndex: 10,
+  }}
+></div>
 
       {/* CENTER PANEL */}
       <div

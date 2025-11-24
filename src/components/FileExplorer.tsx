@@ -70,7 +70,7 @@ export default function FileExplorer() {
   };
 
   return (
-    <div style={{ overflowY: "auto", maxHeight: "100%", padding: 8 }}>
+    <div style={{ overflowY: "auto", height: "100%", padding: 8 }}>
       {tree ? renderNode(tree) : "Loading..."}
     </div>
   );
