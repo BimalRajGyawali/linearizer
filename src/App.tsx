@@ -8,16 +8,18 @@ export default function App() {
   const [functions, setFunctions] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
-  // SIDEBAR WIDTH
+  // Sidebar width and dragging
   const [sidebarWidth, setSidebarWidth] = useState(280);
+  const [draggingOverlay, setDraggingOverlay] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
 
-  // ---------- FUNCTIONS ----------
+  // Toggle function expansion
   const toggle = (id: string) => {
     setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
+  // Fetch parents and functions
   const fetchFlows = async () => {
     try {
       const result: any = await invoke("get_flows");
@@ -32,7 +34,13 @@ export default function App() {
     fetchFlows();
   }, []);
 
-  // ---------- SIDEBAR RESIZE HANDLERS ----------
+  // Drag handlers
+  const startDrag = () => {
+    dragging.current = true;
+    setDraggingOverlay(true);
+    document.body.style.cursor = "col-resize";
+  };
+
   const onMouseMove = (e: MouseEvent) => {
     if (!dragging.current) return;
     const newWidth = e.clientX;
@@ -43,14 +51,8 @@ export default function App() {
 
   const onMouseUp = () => {
     dragging.current = false;
+    setDraggingOverlay(false);
     document.body.style.cursor = "default";
-    document.body.style.userSelect = "auto";
-  };
-
-  const startDrag = () => {
-    dragging.current = true;
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
   };
 
   useEffect(() => {
@@ -62,7 +64,7 @@ export default function App() {
     };
   }, []);
 
-  // ---------- RENDER FUNCTION BODY ----------
+  // Render function body recursively
   const renderFunctionBody = (
     body: string,
     prefixId: string,
@@ -177,41 +179,55 @@ export default function App() {
       }}
     >
       {/* SIDEBAR */}
-<div
-  style={{
-    width: sidebarWidth,
-    minWidth: 200,
-    maxWidth: 600,
-    backgroundColor: "#f3f4f6",
-    borderRight: "1px solid #e5e7eb",
-    // Remove scroll from here
-    padding: 8,
-    display: "flex",
-    flexDirection: "column",
-  }}
->
-  {/* FileExplorer scrolls itself */}
-  <div style={{ flex: 1, overflowY: "auto" }}>
-    <FileExplorer />
-  </div>
-</div>
+      <div
+        ref={sidebarRef}
+        style={{
+          width: sidebarWidth,
+          minWidth: 200,
+          maxWidth: 600,
+          backgroundColor: "#f3f4f6",
+          borderRight: "1px solid #e5e7eb",
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
+        <div style={{ flex: 1, overflowY: "auto" }}>
+          <FileExplorer />
+        </div>
+      </div>
 
-{/* DRAG HANDLE */}
-<div
-  onMouseDown={startDrag}
-  style={{
-    width: 4,
-    cursor: "col-resize",
-    backgroundColor: "transparent", // transparent, no color on drag
-    zIndex: 10,
-  }}
-></div>
+      {/* DRAG HANDLE */}
+      <div
+        onMouseDown={startDrag}
+        style={{
+          width: 4,
+          cursor: "col-resize",
+          backgroundColor: "transparent",
+          zIndex: 10,
+        }}
+      />
+
+      {/* OVERLAY DURING DRAG */}
+      {draggingOverlay && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            width: "100vw",
+            height: "100vh",
+            zIndex: 9999,
+            cursor: "col-resize",
+            backgroundColor: "transparent",
+          }}
+        />
+      )}
 
       {/* CENTER PANEL */}
       <div
         style={{
           flex: 1,
-          padding: 18,
+          padding: 16,
           overflowY: "auto",
           backgroundColor: "#ffffff",
         }}
