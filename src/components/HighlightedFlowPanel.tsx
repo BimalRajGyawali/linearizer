@@ -35,10 +35,16 @@ const MemoizedLine: React.FC<{ code: string }> = React.memo(
 
 const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [activeId, setActiveId] = useState<string | null>(null); // Track last clicked function
 
   const toggle = useCallback((id: string) => {
     setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
   }, []);
+
+  const handleClick = useCallback((id: string) => {
+    toggle(id);
+    setActiveId(id); // mark as active for dashed border
+  }, [toggle]);
 
   const renderFunctionBody = useCallback(
     (body: string, prefixId: string, level = 0, omitFirstLine = false) => {
@@ -51,7 +57,6 @@ const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
             const lineId = `${prefixId}-${idx}`;
             let rendered = false;
 
-            // clickable function calls
             for (const fnName of Object.keys(functions)) {
               if (!line) continue;
               if (line.includes(fnName) && !line.trim().startsWith("def ")) {
@@ -65,7 +70,7 @@ const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
                     style={{
                       marginBottom: 2,
                       position: "relative",
-                      borderLeft: isExpanded ? "3px solid #3b82f6" : "3px solid transparent",
+                      borderLeft: isExpanded ? "1px solid #3b82f6" : "1px solid transparent",
                       paddingLeft: 6,
                       borderRadius: 2,
                     }}
@@ -75,7 +80,7 @@ const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
                       onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        toggle(id);
+                        handleClick(id);
                       }}
                       style={{
                         cursor: "pointer",
@@ -86,8 +91,8 @@ const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
                         fontSize: 14,
                         lineHeight: "1.45",
                         background: isExpanded ? "rgba(59,130,246,0.1)" : "transparent",
-                        border: "none",
-                      }}
+                        border: "none"
+                    }}
                     >
                       <MemoizedLine code={line} />
                     </button>
@@ -102,10 +107,10 @@ const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
                         >
                           <div
                             style={{
-                              backgroundColor: "#f3f4f6",
                               padding: 8,
-                              borderRadius: 6,
-                              border: "1px dashed #3b82f6",
+                              borderRadius: 6, borderLeft: "1px solid #3b82f6",
+
+                              border: activeId === id ? "1px dashed #3b82f6" : "none", // dashed only for last clicked
                             }}
                           >
                             {renderFunctionBody(
@@ -142,7 +147,7 @@ const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
         </div>
       );
     },
-    [expanded, functions, toggle]
+    [expanded, functions, handleClick, activeId]
   );
 
   return (
@@ -169,7 +174,7 @@ const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                toggle(parent);
+                handleClick(parent);
               }}
               style={{
                 width: "100%",
@@ -202,7 +207,7 @@ const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
                       lineHeight: "1.45",
                       color: "#111827",
                       boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
-                      borderLeft: "3px solid #3b82f6",
+                      borderLeft: "1px solid #3b82f6", // solid left border for parent
                     }}
                   >
                     {renderFunctionBody(body, parent)}
