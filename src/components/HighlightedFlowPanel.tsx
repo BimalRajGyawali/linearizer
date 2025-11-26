@@ -20,9 +20,10 @@ const MemoizedLine: React.FC<{ code: string }> = React.memo(
         padding: 0,
         background: "transparent",
         display: "inline",
-        fontFamily: "Fira Code, monospace",
-        fontSize: 14,
-        lineHeight: "1.45",
+        fontFamily: "Jetbrains Mono, monospace",
+        fontSize: 16,
+        lineHeight: "1.4",
+          fontWeight: 500,
         whiteSpace: "pre-wrap",
       }}
       codeTagProps={{ style: { whiteSpace: "pre-wrap", display: "inline" } }}
