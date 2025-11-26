@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import FileExplorer from "./components/FileExplorer";
-import FlowPanel from "./components/FlowPanel";
+import FlowPanel from "./components/HighlightedFlowPanel";
 
 export default function App() {
   const [parents, setParents] = useState<string[]>([]);

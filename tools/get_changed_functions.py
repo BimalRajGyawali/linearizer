@@ -10,7 +10,17 @@ from typing import Dict, List, Optional, Tuple
 
 
 def run_git_diff(repo: str) -> Tuple[int, str, str]:
-    cmd = ["git", "-C", repo, "diff", "--relative"]
+    cmd = [
+        "git",
+        "-C",
+        repo,
+        "diff",
+        "--relative",
+        "--ignore-space-at-eol",
+        "-b",
+        "-w",
+        "--ignore-blank-lines"
+    ]
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     return proc.returncode, proc.stdout, proc.stderr
 
