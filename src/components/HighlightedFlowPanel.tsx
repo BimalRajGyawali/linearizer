@@ -1,18 +1,19 @@
-import React, { useState, useCallback, useMemo } from "react";
+import React, { useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { prism as lightTheme } from "react-syntax-highlighter/dist/esm/styles/prism";
 
 interface FlowPanelProps {
   parents: string[];
   functions: Record<string, string>;
 }
 
+// Memoized line to prevent flash
 const MemoizedLine: React.FC<{ code: string }> = React.memo(
   ({ code }) => (
     <SyntaxHighlighter
       language="python"
-      style={vscDarkPlus}
+      style={lightTheme}
       PreTag="div"
       customStyle={{
         margin: 0,
@@ -33,7 +34,6 @@ const MemoizedLine: React.FC<{ code: string }> = React.memo(
 );
 
 const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
-  // Local expanded state for minimal re-renders
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   const toggle = useCallback((id: string) => {
@@ -51,16 +51,25 @@ const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
             const lineId = `${prefixId}-${idx}`;
             let rendered = false;
 
-            // Check for nested function calls
+            // clickable function calls
             for (const fnName of Object.keys(functions)) {
               if (!line) continue;
               if (line.includes(fnName) && !line.trim().startsWith("def ")) {
                 const id = `${lineId}-${fnName}`;
                 const isExpanded = !!expanded[id];
-
                 rendered = true;
+
                 return (
-                  <div key={id} style={{ marginBottom: 2, position: "relative" }}>
+                  <div
+                    key={id}
+                    style={{
+                      marginBottom: 2,
+                      position: "relative",
+                      borderLeft: isExpanded ? "3px solid #3b82f6" : "3px solid transparent",
+                      paddingLeft: 6,
+                      borderRadius: 2,
+                    }}
+                  >
                     <button
                       type="button"
                       onClick={(e) => {
@@ -76,9 +85,7 @@ const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
                         fontFamily: "Fira Code, monospace",
                         fontSize: 14,
                         lineHeight: "1.45",
-                        background: isExpanded
-                          ? "rgba(255,255,255,0.03)"
-                          : "transparent",
+                        background: isExpanded ? "rgba(59,130,246,0.1)" : "transparent",
                         border: "none",
                       }}
                     >
@@ -95,13 +102,18 @@ const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
                         >
                           <div
                             style={{
-                              backgroundColor: "#1e1e1e",
+                              backgroundColor: "#f3f4f6",
                               padding: 8,
                               borderRadius: 6,
-                              boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+                              border: "1px dashed #3b82f6",
                             }}
                           >
-                            {renderFunctionBody(functions[fnName], id, level + 1, true)}
+                            {renderFunctionBody(
+                              functions[fnName],
+                              id,
+                              level + 1,
+                              true
+                            )}
                           </div>
                         </motion.div>
                       )}
@@ -139,8 +151,9 @@ const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
         flex: 1,
         padding: 16,
         overflowY: "auto",
-        backgroundColor: "#0f1720",
-        color: "#e5e7eb",
+        backgroundColor: "#f9fafb",
+        color: "#111827",
+        fontFamily: "Fira Code, monospace",
       }}
     >
       {parents.length === 0 && <p>Loading parents...</p>}
@@ -161,14 +174,12 @@ const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
               style={{
                 width: "100%",
                 textAlign: "left",
-                backgroundColor: "#111827",
+                backgroundColor: isExpanded ? "#e0f2fe" : "#f3f4f6",
                 padding: "8px 12px",
                 borderRadius: 6,
-                fontFamily: "Fira Code, monospace",
                 fontWeight: 600,
                 cursor: "pointer",
-                color: "#f3f4f6",
-                border: "none",
+                border: "1px solid #d1d5db",
               }}
             >
               {parent}
@@ -184,14 +195,14 @@ const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
                 >
                   <div
                     style={{
-                      backgroundColor: "#0b1220",
+                      backgroundColor: "#ffffff",
                       padding: 12,
                       borderRadius: 6,
-                      fontFamily: "Fira Code, monospace",
                       fontSize: 14,
                       lineHeight: "1.45",
-                      color: "#e5e7eb",
-                      boxShadow: "0 1px 3px rgba(0,0,0,0.25)",
+                      color: "#111827",
+                      boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
+                      borderLeft: "3px solid #3b82f6",
                     }}
                   >
                     {renderFunctionBody(body, parent)}
