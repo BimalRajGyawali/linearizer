@@ -1,12 +1,19 @@
+#!/usr/bin/env python3
 import argparse
 import ast
 import json
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 from textwrap import indent
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Set
+
+# ----------------- basic utils & regex ----------------- #
+PY_FUNC_DEF = re.compile(r"^\s*def\s+([A-Za-z_]\w*)\s*\(")
+CALL_RE = re.compile(r"[A-Za-z_]\w*\s*\(")
+DEF_LINE_RE = re.compile(r"^\s*def\s+[A-Za-z_]\w*\s*\((.*)\)\s*(?:->\s*(.*))?:\s*$")
 
 
 def run_git_diff(repo: str) -> Tuple[int, str, str]:
@@ -19,140 +26,75 @@ def run_git_diff(repo: str) -> Tuple[int, str, str]:
         "--ignore-space-at-eol",
         "-b",
         "-w",
-        "--ignore-blank-lines"
+        "--ignore-blank-lines",
     ]
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     return proc.returncode, proc.stdout, proc.stderr
 
-import re
 
-PY_FUNC_DEF = re.compile(r"^\s*def\s+([A-Za-z_]\w*)\s*\(")
-
+# ----------------- diff parsing & hunk heuristics ----------------- #
 import difflib
-import re
 
-# reuse your PY_FUNC_DEF
-# PY_FUNC_DEF = re.compile(r"^\s*def\s+([A-Za-z_]\w*)\s*\(")
-
-CALL_RE = re.compile(r"[A-Za-z_]\w*\s*\(")
-DEF_LINE_RE = re.compile(r"^\s*def\s+[A-Za-z_]\w*\s*\((.*)\)\s*(?:->\s*(.*))?:\s*$")
 
 def _strip_type_annotations_from_params(params_text: str) -> str:
-    """
-    Remove simple type annotations inside the param list.
-    Example: 'a: int, b: Optional[str] = None' -> 'a, b = None'
-    It's conservative — leaves default values but removes ': type' pieces.
-    """
-    # Remove `: <something>` occurrences that are not inside quotes or parentheses parsing
-    # This is simple regex-based removal (good for common cases).
-    # It will replace ": <anything up to comma or = or )" with "".
     res = re.sub(r"\s*:\s*[^,=\)\]]+", "", params_text)
-    # Normalize whitespace
     res = re.sub(r"\s+", " ", res).strip()
     return res
 
+
 def _normalize_def_line(line: str) -> Optional[str]:
-    """
-    Return a normalized representation of a def line with annotations removed.
-    If the line is not a def line, return None.
-    """
     m = DEF_LINE_RE.match(line)
     if not m:
         return None
     params_text = m.group(1) or ""
-    # remove annotations from params
     params_no_ann = _strip_type_annotations_from_params(params_text)
-    # ignore return annotation entirely
-    # produce normalized: "def name(params_no_ann)"
-    # We also keep function name to ensure it's the same; extract name:
     name_m = re.match(r"^\s*def\s+([A-Za-z_]\w*)\s*\(", line)
     name = name_m.group(1) if name_m else ""
     return f"def {name}({params_no_ann})"
 
+
 def _def_line_change_is_trivial(removed: str, added: str) -> bool:
-    """
-    Determine if a def-line change is trivial:
-    - normalize both lines (strip annotations)
-    - if normalized forms are identical -> trivial (only annotations/return changed)
-    - otherwise, compute a small token change tolerance:
-        - if Levenshtein-like ratio is very high (e.g., difflib.SequenceMatcher ratio >= 0.85),
-          treat as trivial (small rename or tiny edits).
-    """
     norm_removed = _normalize_def_line(removed)
     norm_added = _normalize_def_line(added)
-
-    # If either is not a def-line, it's not a def-def change
     if norm_removed is None or norm_added is None:
         return False
-
     if norm_removed == norm_added:
         return True
-
-    # Fallback: allow very small changes (e.g., one-word rename in param name)
     ratio = difflib.SequenceMatcher(None, norm_removed, norm_added).ratio()
     return ratio >= 0.85
 
 
 def is_important_hunk(hunk_lines: List[str]) -> bool:
-    """
-    Improved hunk importance check:
-    - Collect added and removed lines (ignore '+++' file header lines).
-    - If there are multiple non-trivial changes -> important.
-    - If only one changed line:
-        - keep if it contains a function call
-        - if it's a def-line change but _trivial_ (only annotations/return changed) -> ignore
-        - else keep
-    - If multiple changed lines but they are all trivial defs / trivial imports, you can choose
-      to ignore them — here we still treat multiple changes as important unless all are trivial.
-    """
-
     added = [l for l in hunk_lines if l.startswith("+") and not l.startswith("+++")]
     removed = [l for l in hunk_lines if l.startswith("-") and not l.startswith("---")]
-
-    # Quick exit: no added lines -> ignore
     if not added and not removed:
         return False
-
-    # If single-line change overall (one added and/or one removed)
     total_changed_count = len(added) + len(removed)
     if total_changed_count == 1:
-        # Single added line
         line = (added[0] if added else removed[0])[1:]
-        # Def-line? ignore if trivial
         if PY_FUNC_DEF.match(line):
-            # There's no opposite line to compare; treat as trivial (definition formatting etc.)
             return False
-        # Keep if call found
         if CALL_RE.search(line):
             return True
         return False
 
-    # If there are paired def lines (removed + added) which indicate a def signature change,
-    # attempt to detect trivial def->def changes.
-    # Find pairs where both removed and added are def-lines for the same function name.
     trivial_pairs = 0
     def_pairs_checked = 0
     for r in removed:
         r_line = r[1:]
         if not PY_FUNC_DEF.match(r_line):
             continue
-        # try to find a corresponding added def line with same function name
-        r_name_m = PY_FUNC_DEF.match(r_line)
-        r_name = r_name_m.group(1)
+        r_name = PY_FUNC_DEF.match(r_line).group(1)
         for a in added:
             a_line = a[1:]
-            a_name_m = PY_FUNC_DEF.match(a_line)
-            if not a_name_m:
+            if not PY_FUNC_DEF.match(a_line):
                 continue
-            a_name = a_name_m.group(1)
+            a_name = PY_FUNC_DEF.match(a_line).group(1)
             if a_name == r_name:
                 def_pairs_checked += 1
                 if _def_line_change_is_trivial(r_line, a_line):
                     trivial_pairs += 1
 
-    # If all changed lines are just trivial def->def changes (and there are no other added non-def lines),
-    # then we can ignore the hunk.
-    # Count non-def added lines that are not just import/comment/whitespace
     non_def_added = []
     for a in added:
         a_line = a[1:].strip()
@@ -160,62 +102,45 @@ def is_important_hunk(hunk_lines: List[str]) -> bool:
             continue
         if PY_FUNC_DEF.match(a_line):
             continue
-        # allow import additions to be considered "minor" (optional: treat imports as trivial)
         if a_line.startswith("from ") or a_line.startswith("import "):
-            # treat import additions as minor — do not add to non_def_added
             continue
-        # comments or simple #: skip
         if a_line.startswith("#"):
             continue
         non_def_added.append(a_line)
 
-    # If every def pair we found is trivial, and there are no other meaningful added lines, treat hunk as unimportant
     if def_pairs_checked > 0 and def_pairs_checked == trivial_pairs and len(non_def_added) == 0:
         return False
 
-    # Otherwise, keep the hunk if:
-    # - there exists any added line that contains a call
     for a in added:
         if CALL_RE.search(a[1:]):
             return True
 
-    # If many lines changed and none of the above heuristics flagged it trivial, treat as important.
     return True
 
 
 def parse_diff(diff_text: str):
     files = []
     current = None
-
     for line in diff_text.splitlines():
         if line.startswith("diff --git"):
             if current:
                 files.append(current)
             current = {"file": None, "hunks": []}
-
         elif line.startswith("+++ b/"):
             if current:
                 current["file"] = line.replace("+++ b/", "").strip()
-
         elif line.startswith("@@"):
-            # start a new hunk section
+            if current is None:
+                continue
             current["hunks"].append({"header": line, "lines": []})
-
         elif current and current["hunks"]:
-            # add lines to the current hunk
             current["hunks"][-1]["lines"].append(line)
-
     if current:
         files.append(current)
 
-    # --------- FILTER HUNKS HERE ----------
-    # keep only important hunks (1-line call changes OR multi-line changes)
     filtered_files = []
     for f in files:
-        important_hunks = [
-            h for h in f["hunks"]
-            if is_important_hunk(h["lines"])
-        ]
+        important_hunks = [h for h in f["hunks"] if is_important_hunk(h["lines"])]
         if important_hunks:
             f["hunks"] = important_hunks
             filtered_files.append(f)
@@ -223,40 +148,42 @@ def parse_diff(diff_text: str):
     return filtered_files
 
 
-
 def find_changed_functions(parsed_files):
-    changed = {}   # file -> set of function names
-
+    changed = {}
     for f in parsed_files:
         file_path = f["file"]
-        funcs = set()
-
+        funcs: Set[str] = set()
         for h in f["hunks"]:
             for line in h["lines"]:
-                if line.startswith(("+", " ")):  # added or context
+                if line.startswith(("+", " ")):
                     stripped = line[1:]
                     m = PY_FUNC_DEF.match(stripped)
                     if m:
                         funcs.add(m.group(1))
-
         if funcs:
             changed[file_path] = funcs
-
     return changed
 
 
-from pathlib import Path
+# ----------------- utilities for canonical ids ----------------- #
+def rel_path(repo_root: str, abs_path: str) -> str:
+    try:
+        return os.path.relpath(abs_path, repo_root).replace("\\", "/")
+    except Exception:
+        return abs_path.replace("\\", "/")
 
-def save_function(path: str, name: str, body: str, file_path: str = "functions.json"):
-    """
-    Save a function body into a JSON file under the key 'path.name'.
-    If the JSON file exists, it is loaded and updated. Otherwise, created fresh.
-    """
 
-    key = f"{name}"
+def make_full_id(rel_file: str, fn_name: str) -> str:
+    return f"{rel_file}::{fn_name}"
+
+
+# ----------------- function extraction & saving ----------------- #
+def save_function(path: str, name: str, body: str, file_path: str = "functions.json", repo_root: Optional[str] = None):
+    """
+    Save a function body into a JSON file under the key '<rel_path>::name'.
+    data[key] = {"file": "<rel/path.py>", "body": "<source>"}
+    """
     json_path = Path(file_path)
-
-    # Load existing JSON or start empty
     if json_path.exists():
         try:
             with json_path.open("r") as f:
@@ -266,51 +193,75 @@ def save_function(path: str, name: str, body: str, file_path: str = "functions.j
     else:
         data = {}
 
-    # Update entry
+    rel = path
+    if repo_root:
+        try:
+            rel = os.path.relpath(path, repo_root)
+        except Exception:
+            rel = path
+
+    rel = rel.replace("\\", "/")
+    key = make_full_id(rel, name)
     data[key] = body
 
-    # Write back
     with json_path.open("w") as f:
         json.dump(data, f, indent=2)
 
 
-def extract_functions_from_file(path: str, function_names: set):
+def extract_functions_from_file(path: str, function_names: set, repo_root: Optional[str] = None):
+    """
+    Extract the requested top-level functions from a file.
+    Returns a dict: full_id -> full body (string)
+    Also saves them to functions.json via save_function (with repo-relative file).
+    """
     text = Path(path).read_text().splitlines()
-    results = {}
+    results: Dict[str, str] = {}
     current_name = None
-    current_body = []
+    current_body: List[str] = []
 
     for i, line in enumerate(text):
         m = PY_FUNC_DEF.match(line)
         if m:
             name = m.group(1)
             if current_name and current_body:
-                results[f"{current_name}"] = "\n".join(current_body)
-                save_function(path, current_name, "\n".join(current_body))
-
+                rel = path
+                if repo_root:
+                    try:
+                        rel = os.path.relpath(path, repo_root)
+                    except Exception:
+                        rel = path
+                rel = rel.replace("\\", "/")
+                key = make_full_id(rel, current_name)
+                results[key] = "\n".join(current_body)
+                save_function(path, current_name, "\n".join(current_body), repo_root=repo_root)
             current_name = name if name in function_names else None
             current_body = [line] if current_name else []
-
         elif current_name:
-            # part of the function body
             current_body.append(line)
 
     if current_name:
-        results[f"{current_name}"] = "\n".join(current_body)
-        save_function(path, current_name, "\n".join(current_body))
+        rel = path
+        if repo_root:
+            try:
+                rel = os.path.relpath(path, repo_root)
+            except Exception:
+                rel = path
+        rel = rel.replace("\\", "/")
+        key = make_full_id(rel, current_name)
+        results[key] = "\n".join(current_body)
+        save_function(path, current_name, "\n".join(current_body), repo_root=repo_root)
 
     return results
 
 
+# ----------------- AST helpers to find calls ----------------- #
 def find_calls_ast(body: str) -> List[str]:
     """
     Parse function body using AST and return names of all called functions.
-    Ignores the function's own def line.
+    Returns bare names (e.g., 'process_metric_stats' or attribute name 'process_metric_stats').
     """
     found = set()
-    # lines = body.splitlines()[1:]  # skip def line
-    code = body #"\n".join(lines)
-
+    code = body
     try:
         node = ast.parse(code)
     except SyntaxError:
@@ -321,98 +272,229 @@ def find_calls_ast(body: str) -> List[str]:
             if isinstance(n.func, ast.Name):
                 found.add(n.func.id)
             elif isinstance(n.func, ast.Attribute):
+                # attribute calls: foo.bar()
+                # we'll treat attribute name (bar) for resolution (imports handled separately)
                 found.add(n.func.attr)
     return list(found)
 
 
-def save_graph(graph: Dict[str, List[str]], file_path: str = "call_graph.json"):
+# ----------------- Repo index & import parsing ----------------- #
+def build_repo_index(repo_root: str) -> Dict[str, List[str]]:
     """
-    Save a call graph (dict of str → list[str]) as formatted JSON.
-    Overwrites the file each time to keep it valid.
+    Walk the repo and build an index: function_name -> list of repo-relative file paths that define it.
+    Only top-level defs considered.
     """
-    path = Path(file_path)
+    index: Dict[str, List[str]] = {}
+    for root, dirs, files in os.walk(repo_root):
+        # skip .git and env dirs quickly
+        if ".git" in dirs:
+            dirs.remove(".git")
+        for fname in files:
+            if not fname.endswith(".py"):
+                continue
+            fpath = os.path.join(root, fname)
+            # skip virtualenvs commonly named .venv or venv
+            if "/.venv/" in fpath or "/venv/" in fpath or "\\.venv\\" in fpath or "\\venv\\" in fpath:
+                continue
+            rel = os.path.relpath(fpath, repo_root).replace("\\", "/")
+            try:
+                src = Path(fpath).read_text()
+                tree = ast.parse(src)
+            except Exception:
+                continue
+            for node in tree.body:
+                if isinstance(node, ast.FunctionDef):
+                    index.setdefault(node.name, []).append(rel)
+    return index
 
+
+def parse_imports(file_path: str) -> Dict[str, str]:
+    """
+    Parse top-level imports to build a name -> module mapping.
+    Supports:
+        import X as Y
+        from X import A as B
+    Returns: name bound in current module -> module path (dotted)
+    """
+    bindings: Dict[str, str] = {}
+    try:
+        source = Path(file_path).read_text()
+        tree = ast.parse(source)
+    except Exception:
+        return bindings
+
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                name = alias.asname or alias.name
+                bindings[name] = alias.name  # module path (dotted)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module
+            # if module is None (relative weird import) skip
+            if not module:
+                continue
+            for alias in node.names:
+                name = alias.asname or alias.name
+                bindings[name] = module  # module path (dotted)
+    return bindings
+
+
+# ----------------- Resolution ----------------- #
+def resolve_call(
+    fn_name: str,
+    bindings: Dict[str, str],
+    current_file_abs: str,
+    repo_root: str,
+    repo_index: Dict[str, List[str]],
+) -> str:
+    """
+    Resolve a function call into repo-relative path::fn_name only when the target lives inside repo_root.
+    Returns either:
+      - "rel/path.py::fn_name" (repo-local)
+      - "fn_name" (external or ambiguous)
+    """
+    # 1) Imported binding (e.g., from utils.parser import parse -> bindings['parse'] == 'utils.parser')
+    if fn_name in bindings:
+        mod = bindings[fn_name]
+        mod_path = mod.replace(".", "/") + ".py"
+        abs_mod_path = os.path.join(repo_root, mod_path)
+        if os.path.isfile(abs_mod_path):
+            rel = os.path.relpath(abs_mod_path, repo_root).replace("\\", "/")
+            return f"{rel}::{fn_name}"
+        # imported module not in repo -> external library; don't qualify
+        return fn_name
+
+    # 2) Is fn defined in current file? check AST quickly
+    try:
+        src = Path(current_file_abs).read_text()
+        tree = ast.parse(src)
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name == fn_name:
+                rel = os.path.relpath(current_file_abs, repo_root).replace("\\", "/")
+                return f"{rel}::{fn_name}"
+    except Exception:
+        pass
+
+    # 3) Repo index: unique definition
+    candidates = repo_index.get(fn_name, [])
+    if len(candidates) == 1:
+        return f"{candidates[0]}::{fn_name}"
+    # ambiguous or not found -> return plain
+    return fn_name
+
+
+# ----------------- Graph builders ----------------- #
+def build_changed_call_graph(
+    function_bodies: Dict[str, str],
+    file_map: Dict[str, str],
+    repo_root: str,
+    repo_index: Dict[str, List[str]],
+) -> Dict[str, List[str]]:
+    """
+    Build call graph for changed functions. Keys are full ids "rel/path.py::fn".
+    Values are lists of resolved call targets (either 'rel/path.py::fn' or plain 'fn').
+    """
+    graph: Dict[str, List[str]] = {}
+    for full_id, body in function_bodies.items():
+        # full_id is "rel/path.py::fn"
+        # determine abs path of current file
+        try:
+            rel_file, fn_name = full_id.split("::", 1)
+        except ValueError:
+            # malformed key; skip
+            continue
+        current_file_abs = os.path.join(repo_root, rel_file)
+        calls = find_calls_ast(body)
+        bindings = parse_imports(current_file_abs) if os.path.isfile(current_file_abs) else {}
+        resolved_calls = [
+            resolve_call(c, bindings, current_file_abs, repo_root, repo_index) for c in calls
+        ]
+        graph[full_id] = resolved_calls
+    return graph
+
+
+def find_parent_functions_changed_only(graph: Dict[str, List[str]]) -> List[str]:
+    all_funcs = set(graph.keys())
+    called_by_changed = set()
+    for fn, calls in graph.items():
+        for c in calls:
+            # if c is qualified (rel/path::name), use it; otherwise extract tail name and try to find matching full ids
+            if "::" in c:
+                target_full = c
+            else:
+                # try to find any changed function with that trailing name
+                matches = [f for f in all_funcs if f.endswith("::" + c)]
+                target_full = matches[0] if len(matches) == 1 else None
+            if target_full and target_full in all_funcs:
+                called_by_changed.add(target_full)
+    parents = list(all_funcs - called_by_changed)
+    return parents
+
+
+def save_graph(graph: Dict[str, List[str]]):
+    file_path = "call_graph.json"
+    path = Path(file_path)
     with path.open("w") as f:
         json.dump(graph, f, indent=2)
 
 
-def build_changed_call_graph(function_bodies: Dict[str,str]) -> Dict[str,List[str]]:
-    changed_names = set(function_bodies.keys())
-    graph = {}
-    for fn, body in function_bodies.items():
-        calls = find_calls_ast(body)
-        graph[fn] = calls # [c for c in calls if c in changed_names]
-
-    # save_graph(graph, "call_graph.json")
-
-    return graph
-
-
-
-def save_parent_functions(parents: List[str], file_path: str = "parent_functions.json"):
-    """
-    Save the list of top-level parent functions to a JSON file.
-    Overwrites the file each time.
-    """
+def save_parent_functions(parents: List[str]):
+    file_path = "parent_functions.json"
     path = Path(file_path)
     with path.open("w") as f:
         json.dump(parents, f, indent=2)
 
 
-def find_parent_functions_changed_only(graph: Dict[str,List[str]]) -> List[str]:
-    """
-    Returns changed functions that are not called by any other changed function.
-    Ignores calls to external functions.
-    """
-    all_funcs = set(graph.keys())
-    called_by_changed = set()
-
-    for fn, calls in graph.items():
-        for c in calls:
-            if c in all_funcs:
-                called_by_changed.add(c)
-
-    parents = all_funcs - called_by_changed
-    save_parent_functions(list(parents), "parent_functions.json")
-    return list(parents)
-
-
-# def build_flows(repo):
-#     print(f"Building flows for {repo}...")
-#     res = run_git_diff(repo)
-#     content = parse_diff(res[1])
-#     changed_funcs = find_changed_functions(content)
-#     all_func_bodies = {}
-#     for file, funcs in changed_funcs.items():
-#         func_bodies = extract_functions_from_file(repo + "/" + file, funcs)
-#         all_func_bodies.update(func_bodies)
-#
-#     call_graph = build_changed_call_graph(all_func_bodies)
-#     parent_funcs = find_parent_functions_changed_only(call_graph)
-#
-#     return parent_funcs
-
-
+# ----------------- main ----------------- #
 def main(argv: Optional[List[str]] = None):
     p = argparse.ArgumentParser()
-    p.add_argument("--repo", default="/home/bimal/Documents/ucsd/research/code/trap")
+    p.add_argument("--repo", required=True, help="path to the repo root")
+    p.add_argument("--out-dir", default=".", help="where to write functions.json / call_graph.json")
     args = p.parse_args(argv)
 
+    repo_root = os.path.abspath(args.repo)
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     try:
-        res = run_git_diff(args.repo)
-        content = parse_diff(res[1])
-        changed_funcs = find_changed_functions(content)
-        all_func_bodies = {}
-        for file, funcs in changed_funcs.items():
-            func_bodies = extract_functions_from_file(args.repo + "/" + file, funcs)
-            all_func_bodies.update(func_bodies)
+        # 1) get git diff and parse changed files/hunks
+        res = run_git_diff(repo_root)
+        parsed = parse_diff(res[1])
+        changed_funcs = find_changed_functions(parsed)  # map: repo-relative file -> set(fn)
+        if not changed_funcs:
+            print(json.dumps({"parents": []}, indent=2))
+            return
 
-        call_graph = build_changed_call_graph(all_func_bodies)
-        parent_funcs = find_parent_functions_changed_only(call_graph)
+        # 2) Build a repo index of all top-level function defs (repo-relative paths)
+        repo_index = build_repo_index(repo_root)
 
-        print(json.dumps({"parents": parent_funcs}, indent=2), file=sys.stdout)
+        # 3) Extract bodies for changed functions and build function_bodies keyed by full_id
+        all_func_bodies: Dict[str, str] = {}
+        file_map: Dict[str, str] = {}  # full_id -> abs path
+        for rel_file, funcs in changed_funcs.items():
+            abs_file = os.path.join(repo_root, rel_file)
+            extracted = extract_functions_from_file(abs_file, funcs, repo_root=repo_root)
+            # extracted: full_id -> body
+            for full_id, body in extracted.items():
+                all_func_bodies[full_id] = body
+                # store absolute path for that full_id's file part
+                rel_file_part, fn_name = full_id.split("::", 1)
+                file_map[full_id] = os.path.join(repo_root, rel_file_part)
+
+        # 4) Build call graph with resolution that qualifies only repo-local targets
+        call_graph = build_changed_call_graph(all_func_bodies, file_map, repo_root, repo_index)
+
+        # 5) Save outputs
+        save_graph(call_graph)
+        parents = find_parent_functions_changed_only(call_graph)
+        save_parent_functions(parents)
+
+        # Note: extract_functions_from_file already called save_function which wrote functions.json
+        # But ensure we write only changed functions' bodies (functions.json already contains full_id keys)
+        # Print parents as main CLI output
+        print(json.dumps({"parents": parents}, indent=2), file=sys.stdout)
+
     except Exception as e:
-
         print(json.dumps({"error": str(e)}), file=sys.stdout)
         sys.exit(1)
 
