@@ -178,11 +178,12 @@ def make_full_id(rel_file: str, fn_name: str) -> str:
 
 
 # ----------------- function extraction & saving ----------------- #
-def save_function(path: str, name: str, body: str, file_path: str = "functions.json", repo_root: Optional[str] = None):
+def save_function(path: str, name: str, body: str, repo_root: Optional[str] = None):
     """
     Save a function body into a JSON file under the key '<rel_path>::name'.
     data[key] = {"file": "<rel/path.py>", "body": "<source>"}
     """
+    file_path: str = "functions.json"
     json_path = Path(file_path)
     if json_path.exists():
         try:
@@ -201,55 +202,122 @@ def save_function(path: str, name: str, body: str, file_path: str = "functions.j
             rel = path
 
     rel = rel.replace("\\", "/")
-    key = make_full_id(rel, name)
+    key = f"/{make_full_id(rel, name)}"
     data[key] = body
 
     with json_path.open("w") as f:
         json.dump(data, f, indent=2)
 
 
-def extract_functions_from_file(path: str, function_names: set, repo_root: Optional[str] = None):
+def parse_imports(path: str) -> Dict[str, str]:
     """
-    Extract the requested top-level functions from a file.
-    Returns a dict: full_id -> full body (string)
-    Also saves them to functions.json via save_function (with repo-relative file).
+    Parse imports in a file and return mapping: alias -> full module path.
     """
+    import_map = {}
     text = Path(path).read_text().splitlines()
-    results: Dict[str, str] = {}
-    current_name = None
-    current_body: List[str] = []
+    for line in text:
+        line = line.strip()
+        if line.startswith("import "):
+            # import module as alias
+            parts = line.replace("import ", "").split(" as ")
+            module = parts[0].strip()
+            alias = parts[1].strip() if len(parts) > 1 else module.split(".")[-1]
+            import_map[alias] = module
+        elif line.startswith("from "):
+            # from module import name as alias
+            m = re.match(r"from\s+([\w\.]+)\s+import\s+([\w\,\s]+)", line)
+            if m:
+                mod = m.group(1)
+                names = m.group(2).split(",")
+                for n in names:
+                    n = n.strip()
+                    if " as " in n:
+                        real, alias = n.split(" as ")
+                        import_map[alias.strip()] = f"{mod}.{real.strip()}"
+                    else:
+                        import_map[n] = f"{mod}.{n}"
+    return import_map
 
-    for i, line in enumerate(text):
+
+def qualify_calls_in_line(
+    line: str,
+    imports_map: Dict[str, str],  # maps fn_name -> module path like backend.services.analytics_processor
+    local_funcs: set,             # functions defined in this file
+    current_file: str,
+    repo_root: str
+) -> str:
+    """
+    Replace function calls in a line with /repo-relative-path::func_name
+    using imports or local functions.
+    """
+
+    def replacer(match):
+        fn = match.group(0).rstrip("(").strip()
+
+        # Local function in this file
+        if fn in local_funcs:
+            rel_path = "/" + os.path.relpath(current_file, repo_root).replace("\\", "/")
+            return f"{rel_path}::{fn}("
+
+        # Imported function
+        elif fn in imports_map:
+            # Get module string from import
+            module_str = imports_map[fn]  # e.g., ".analytics_processor"
+
+            # Resolve relative to current file package
+            current_file_pkg = Path(current_file).parent.relative_to(repo_root).as_posix()  # backend/services
+            if module_str.startswith("."):
+                # handle relative import
+                rel_module_path = module_str.lstrip(".")  # remove dots
+                full_module_path = Path(current_file_pkg) / rel_module_path
+            else:
+                # absolute import
+                full_module_path = Path(module_str.replace(".", "/"))
+
+            # Final repo-relative path
+            rel_path = "/" + full_module_path.as_posix() + ".py"
+
+            return f"{rel_path}::{fn}("
+
+        # Unknown / builtin
+        else:
+            return fn + "("
+
+    return re.sub(r"\b[A-Za-z_]\w*\s*\(", replacer, line)
+
+
+def extract_functions_from_file(path: str, function_names: set, repo_root: Optional[str] = None):
+    text = Path(path).read_text().splitlines()
+    results = {}
+    current_name = None
+    current_body = []
+
+    # parse imports
+    imports_map = parse_imports(path)
+    local_funcs = set()
+
+    for line in text:
         m = PY_FUNC_DEF.match(line)
         if m:
             name = m.group(1)
             if current_name and current_body:
-                rel = path
-                if repo_root:
-                    try:
-                        rel = os.path.relpath(path, repo_root)
-                    except Exception:
-                        rel = path
-                rel = rel.replace("\\", "/")
-                key = make_full_id(rel, current_name)
-                results[key] = "\n".join(current_body)
-                save_function(path, current_name, "\n".join(current_body), repo_root=repo_root)
+                full_body = "\n".join([qualify_calls_in_line(l, imports_map, local_funcs, path, repo_root) for l in current_body])
+                key = make_full_id(path, current_name)
+                results[key] = full_body
+                save_function(path, current_name, full_body, repo_root)
             current_name = name if name in function_names else None
+            if current_name:
+                local_funcs.add(current_name)
             current_body = [line] if current_name else []
         elif current_name:
             current_body.append(line)
 
-    if current_name:
-        rel = path
-        if repo_root:
-            try:
-                rel = os.path.relpath(path, repo_root)
-            except Exception:
-                rel = path
-        rel = rel.replace("\\", "/")
-        key = make_full_id(rel, current_name)
-        results[key] = "\n".join(current_body)
-        save_function(path, current_name, "\n".join(current_body), repo_root=repo_root)
+    # save last function
+    if current_name and current_body:
+        full_body = "\n".join([qualify_calls_in_line(l, imports_map, local_funcs, path, repo_root) for l in current_body])
+        key = make_full_id(path, current_name)
+        results[key] = full_body
+        save_function(path, current_name, full_body, repo_root)
 
     return results
 
@@ -308,35 +376,6 @@ def build_repo_index(repo_root: str) -> Dict[str, List[str]]:
     return index
 
 
-def parse_imports(file_path: str) -> Dict[str, str]:
-    """
-    Parse top-level imports to build a name -> module mapping.
-    Supports:
-        import X as Y
-        from X import A as B
-    Returns: name bound in current module -> module path (dotted)
-    """
-    bindings: Dict[str, str] = {}
-    try:
-        source = Path(file_path).read_text()
-        tree = ast.parse(source)
-    except Exception:
-        return bindings
-
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                name = alias.asname or alias.name
-                bindings[name] = alias.name  # module path (dotted)
-        elif isinstance(node, ast.ImportFrom):
-            module = node.module
-            # if module is None (relative weird import) skip
-            if not module:
-                continue
-            for alias in node.names:
-                name = alias.asname or alias.name
-                bindings[name] = module  # module path (dotted)
-    return bindings
 
 
 # ----------------- Resolution ----------------- #
@@ -388,29 +427,52 @@ def build_changed_call_graph(
     function_bodies: Dict[str, str],
     file_map: Dict[str, str],
     repo_root: str,
-    repo_index: Dict[str, List[str]],
 ) -> Dict[str, List[str]]:
     """
-    Build call graph for changed functions. Keys are full ids "rel/path.py::fn".
-    Values are lists of resolved call targets (either 'rel/path.py::fn' or plain 'fn').
+    Build call graph for changed functions.
+    Keys are full ids "/rel/path.py::fn" (repo-root relative from root).
+    Values are lists of resolved call targets (either '/rel/path.py::fn' or plain 'fn').
     """
     graph: Dict[str, List[str]] = {}
+
     for full_id, body in function_bodies.items():
         # full_id is "rel/path.py::fn"
-        # determine abs path of current file
         try:
             rel_file, fn_name = full_id.split("::", 1)
         except ValueError:
-            # malformed key; skip
             continue
+
         current_file_abs = os.path.join(repo_root, rel_file)
         calls = find_calls_ast(body)
+
+        # Parse imports to map function -> module
         bindings = parse_imports(current_file_abs) if os.path.isfile(current_file_abs) else {}
-        resolved_calls = [
-            resolve_call(c, bindings, current_file_abs, repo_root, repo_index) for c in calls
-        ]
-        graph[full_id] = resolved_calls
+
+        resolved_calls = []
+        for c in calls:
+            if c in bindings:
+                # Resolve import relative to repo root
+                module_str = bindings[c]  # e.g., ".analytics_processor" or "backend.services.analytics_processor"
+                current_pkg = Path(current_file_abs).parent.relative_to(repo_root).as_posix()
+                if module_str.startswith("."):
+                    # relative import
+                    rel_module_path = module_str.lstrip(".")
+                    full_module_path = Path(current_pkg) / rel_module_path
+                else:
+                    # absolute import
+                    full_module_path = Path(module_str.replace(".", "/"))
+                call_key = "/" + full_module_path.as_posix() + ".py::" + c
+            else:
+                call_key = c  # local function or unknown/builtin
+            resolved_calls.append(call_key)
+
+        # Use repo-relative path for parent key
+        parent_key = "/" + Path(current_file_abs).relative_to(repo_root).as_posix() + f"::{fn_name}"
+
+        graph[parent_key] = resolved_calls
+
     return graph
+
 
 
 def find_parent_functions_changed_only(graph: Dict[str, List[str]]) -> List[str]:
@@ -448,13 +510,10 @@ def save_parent_functions(parents: List[str]):
 # ----------------- main ----------------- #
 def main(argv: Optional[List[str]] = None):
     p = argparse.ArgumentParser()
-    p.add_argument("--repo", required=True, help="path to the repo root")
-    p.add_argument("--out-dir", default=".", help="where to write functions.json / call_graph.json")
+    p.add_argument("--repo", required=False, default="/home/bimal/Documents/ucsd/research/code/trap", help="path to the git repo to analyze")
     args = p.parse_args(argv)
 
     repo_root = os.path.abspath(args.repo)
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         # 1) get git diff and parse changed files/hunks
@@ -465,7 +524,8 @@ def main(argv: Optional[List[str]] = None):
             print(json.dumps({"parents": []}, indent=2))
             return
 
-        # 2) Build a repo index of all top-level function defs (repo-relative paths)
+        # 2) Build repo index for resolution
+
         repo_index = build_repo_index(repo_root)
 
         # 3) Extract bodies for changed functions and build function_bodies keyed by full_id
@@ -481,11 +541,11 @@ def main(argv: Optional[List[str]] = None):
                 rel_file_part, fn_name = full_id.split("::", 1)
                 file_map[full_id] = os.path.join(repo_root, rel_file_part)
 
-        # 4) Build call graph with resolution that qualifies only repo-local targets
-        call_graph = build_changed_call_graph(all_func_bodies, file_map, repo_root, repo_index)
 
-        # 5) Save outputs
+        # 4) Build call graph for changed functions
+        call_graph = build_changed_call_graph(all_func_bodies, file_map, repo_root)
         save_graph(call_graph)
+        # 5) Save outputs
         parents = find_parent_functions_changed_only(call_graph)
         save_parent_functions(parents)
 
@@ -495,8 +555,9 @@ def main(argv: Optional[List[str]] = None):
         print(json.dumps({"parents": parents}, indent=2), file=sys.stdout)
 
     except Exception as e:
-        print(json.dumps({"error": str(e)}), file=sys.stdout)
-        sys.exit(1)
+        raise e
+        # print(json.dumps({"error": str(e)}), file=sys.stdout)
+        # sys.exit(1)
 
 
 if __name__ == "__main__":
