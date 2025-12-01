@@ -271,15 +271,18 @@ def qualify_calls_in_line(
                 rel_module_path = module_str.lstrip(".")  # remove dots
                 parts = rel_module_path.split(".")
                 file_name = parts[0]
-                func_name = parts[1]
-                rel_module_path = file_name+".py::"+func_name
+                rel_module_path = file_name+".py"
                 full_module_path = Path(current_file_pkg) / rel_module_path
             else:
-                # absolute import
-                full_module_path = Path(module_str.replace(".", "/"))
+                parts = module_str.split(".")
+                func_name = parts[-1]  # "calculate_average"
+                module_path = "/".join(parts[:-1])
+                full_module_path = Path(f"{module_path}.py")
 
             # Final repo-relative path
             rel_path = "/" + full_module_path.as_posix()
+
+            # print(rel_path)
 
 
             return f"{rel_path}::{fn}("
