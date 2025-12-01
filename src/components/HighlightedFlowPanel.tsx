@@ -47,6 +47,19 @@ const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
     setActiveId(id); // mark as active for dashed border
   }, [toggle]);
 
+  const getDisplayFnName = (fullId: string) => {
+      let dispName =  fullId.split("::").pop() || fullId;
+      return dispName;
+  }
+
+function stripQualifiedCalls(line: string): string {
+  // Find patterns like   something.py::funcName(
+  return line.replace(
+    /[A-Za-z0-9_\/\.\-]+\.py::([A-Za-z_]\w*)\s*\(/g,
+    (_, fn) => fn + "("
+  );
+}
+
   const renderFunctionBody = useCallback(
     (body: string, prefixId: string, level = 0, omitFirstLine = false) => {
       const lines = body ? body.split("\n") : [];
@@ -59,6 +72,9 @@ const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
             let rendered = false;
 
             for (const fnName of Object.keys(functions)) {
+              const displayFnName  = getDisplayFnName(fnName);
+                console.log("displayFnName", displayFnName);
+                console.log("fnName", fnName);
               if (!line) continue;
               if (line.includes(fnName) && !line.trim().startsWith("def ")) {
                 const id = `${lineId}-${fnName}`;
@@ -95,7 +111,7 @@ const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
                         border: "none"
                     }}
                     >
-                      <MemoizedLine code={line} />
+                      <MemoizedLine code={line.replace(fnName, displayFnName)} />
                     </button>
 
                     <AnimatePresence>
@@ -138,7 +154,7 @@ const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
                     marginLeft: level * 16,
                   }}
                 >
-                  <MemoizedLine code={line} />
+                  <MemoizedLine code={stripQualifiedCalls(line)} />
                 </div>
               );
             }
@@ -188,7 +204,7 @@ const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
                 border: "1px solid #d1d5db",
               }}
             >
-              {parent}
+              {parent.split("::").pop() || parent}
             </button>
 
             <AnimatePresence initial={false}>
