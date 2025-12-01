@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, forwardRef, useImperativeHandle, Ref } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { FiFolder, FiFolderPlus, FiFile } from "react-icons/fi";
 
-type FileNode = {
+export type FileNode = {
   name: string;
   path: string;
   type: "file" | "folder";
@@ -10,9 +10,16 @@ type FileNode = {
   git?: "added" | "modified" | "deleted" | "untracked" | null;
 };
 
-export default function FileExplorer() {
+export type FileExplorerHandle = {
+  highlightFile: (path: string) => void;
+};
+
+const FileExplorer = forwardRef((props, ref: Ref<FileExplorerHandle>) => {
   const [tree, setTree] = useState<FileNode | null>(null);
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [highlighted, setHighlighted] = useState<string | null>(null);
+
+  const containerRef = React.useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     invoke("get_file_tree").then((t) => setTree(t as FileNode));
@@ -22,26 +29,69 @@ export default function FileExplorer() {
 
   const gitColor = (status?: string) => {
     switch (status) {
-      case "added":
-        return "#16a34a"; // green
-      case "modified":
-        return "#ca8a04"; // orange/yellow
-      case "deleted":
-        return "#dc2626"; // red
-      case "untracked":
-        return "#6b7280"; // gray
-      default:
-        return "#111"; // default file/folder color
+      case "added": return "#16a34a";
+      case "modified": return "#ca8a04";
+      case "deleted": return "#dc2626";
+      case "untracked": return "#6b7280";
+      default: return "#111";
     }
   };
+
+useImperativeHandle(ref, () => ({
+  highlightFile: (path: string) => {
+    // Expand all parent folders
+    const openMap: Record<string, boolean> = {};
+    const expandParents = (node: FileNode | undefined) => {
+      if (!node) return false;
+      if (node.path === path) return true;
+      if (node.children) {
+        for (const c of node.children) {
+          if (expandParents(c)) {
+            openMap[node.path] = true;
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+    expandParents(tree!);
+
+    // Merge with existing open state
+    setOpen((prev) => ({ ...prev, ...openMap }));
+
+    setHighlighted(path);
+
+    console.log(path)
+
+    // Scroll to element
+    const el = document.getElementById(`file-${path}`);
+    if (el && containerRef.current) {
+      const container = containerRef.current;
+      const elTop = el.offsetTop;
+      const elBottom = elTop + el.offsetHeight;
+      const containerTop = container.scrollTop;
+      const containerBottom = containerTop + container.clientHeight;
+
+      if (elTop < containerTop) {
+        container.scrollTop = elTop - 8; // scroll up slightly
+      } else if (elBottom > containerBottom) {
+        container.scrollTop = elBottom - container.clientHeight + 8; // scroll down slightly
+      }
+    }
+  },
+}));
 
   const renderNode = (node: FileNode, depth = 0) => {
     const isFolder = node.type === "folder";
     const isOpen = open[node.path] || false;
+    const isHighlighted = highlighted === node.path;
+
+    console.log(node.path)
 
     return (
       <div key={node.path} style={{ marginLeft: depth * 14, fontFamily: "Fira Code, monospace" }}>
         <div
+          id={`file-${node.path}`}
           style={{
             display: "flex",
             alignItems: "center",
@@ -51,27 +101,30 @@ export default function FileExplorer() {
             lineHeight: "1.5rem",
             padding: "2px 0",
             color: gitColor(node.git),
+            backgroundColor: isHighlighted ? "#fde68a" : "transparent",
+            borderRadius: 4,
           }}
           onClick={() => isFolder && toggle(node.path)}
         >
-          {/* Folder/File icon */}
           <span style={{ marginRight: 6 }}>
             {isFolder ? (isOpen ? <FiFolderPlus /> : <FiFolder />) : <FiFile />}
           </span>
-
-          {/* File/Folder name */}
           <span>{node.name}</span>
         </div>
 
-        {/* Recursively render children */}
         {isFolder && isOpen && node.children?.map((c) => renderNode(c, depth + 1))}
       </div>
     );
+
+
+
   };
 
   return (
-    <div style={{ overflowY: "auto", height: "100%", padding: 8 }}>
+    <div ref={containerRef} style={{ overflowY: "auto", height: "100%", padding: 8 }}>
       {tree ? renderNode(tree) : "Loading..."}
     </div>
   );
-}
+});
+
+export default FileExplorer;

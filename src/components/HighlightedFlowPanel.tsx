@@ -6,7 +6,11 @@ import { prism as lightTheme } from "react-syntax-highlighter/dist/esm/styles/pr
 interface FlowPanelProps {
   parents: string[];
   functions: Record<string, string>;
+  expanded: Record<string, boolean>;
+  toggle: (id: string) => void;
+  onFunctionClick?: (fullId: string) => void; // new prop
 }
+
 
 // Memoized line to prevent flash
 const MemoizedLine: React.FC<{ code: string }> = React.memo(
@@ -34,13 +38,20 @@ const MemoizedLine: React.FC<{ code: string }> = React.memo(
   (prev, next) => prev.code === next.code
 );
 
-const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+const FlowPanel: React.FC<FlowPanelProps> = ({
+    parents,
+  functions,
+  expanded,
+  toggle,
+  onFunctionClick,
+
+}) => {
+  // const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [activeId, setActiveId] = useState<string | null>(null); // Track last clicked function
 
-  const toggle = useCallback((id: string) => {
-    setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
-  }, []);
+  // const toggle = useCallback((id: string) => {
+  //   setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
+  // }, []);
 
   const handleClick = useCallback((id: string) => {
     toggle(id);
@@ -73,8 +84,6 @@ function stripQualifiedCalls(line: string): string {
 
             for (const fnName of Object.keys(functions)) {
               const displayFnName  = getDisplayFnName(fnName);
-                console.log("displayFnName", displayFnName);
-                console.log("fnName", fnName);
               if (!line) continue;
               if (line.includes(fnName) && !line.trim().startsWith("def ")) {
                 const id = `${lineId}-${fnName}`;
@@ -98,6 +107,7 @@ function stripQualifiedCalls(line: string): string {
                         e.preventDefault();
                         e.stopPropagation();
                         handleClick(id);
+                        onFunctionClick?.(fnName);
                       }}
                       style={{
                         cursor: "pointer",

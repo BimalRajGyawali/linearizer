@@ -1,6 +1,7 @@
-import React, { useEffect, useState, useRef } from "react";
+// App.tsx
+import React, { useEffect, useState, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import FileExplorer from "./components/FileExplorer";
+import FileExplorer, { FileExplorerHandle } from "./components/FileExplorer";
 import FlowPanel from "./components/HighlightedFlowPanel";
 
 export default function App() {
@@ -17,6 +18,9 @@ export default function App() {
   const dragging = useRef(false);
 
   const COLLAPSED_WIDTH = 40; // Minimum clickable width
+
+  // FileExplorer ref to control scrolling/highlighting
+  const fileExplorerRef = useRef<FileExplorerHandle>(null);
 
   // Toggle function expansion
   const toggle = (id: string) => {
@@ -81,7 +85,22 @@ export default function App() {
     };
   }, [collapsed]);
 
-  // ---------- LAYOUT ----------
+  // When a function call is clicked inside FlowPanel
+const handleFunctionClick = useCallback((fullId: string) => {
+  // extract file path before ::
+  let path = fullId.split("::")[0]; // "/backend/services/analytics_processor.py"
+
+  // Remove leading slash if your FileNode paths are relative to repo root
+  if (path.startsWith("/")) path = path.slice(1);
+
+  // Optional: prepend repo root if needed
+  const repoRoot = "/home/bimal/Documents/ucsd/research/code/trap/";
+  const fullPath = repoRoot + path;
+
+  console.log("Highlighting file at:", fullPath);
+
+  fileExplorerRef.current?.highlightFile(fullPath);
+}, []);
   return (
     <div
       style={{
@@ -131,7 +150,7 @@ export default function App() {
         {/* FileExplorer scrolls */}
         {!collapsed && (
           <div style={{ flex: 1, overflowY: "auto" }}>
-            <FileExplorer />
+            <FileExplorer ref={fileExplorerRef} />
           </div>
         )}
       </div>
@@ -169,6 +188,7 @@ export default function App() {
         functions={functions}
         expanded={expanded}
         toggle={toggle}
+        onFunctionClick={handleFunctionClick} // pass handler to FlowPanel
       />
     </div>
   );
