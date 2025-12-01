@@ -269,13 +269,18 @@ def qualify_calls_in_line(
             if module_str.startswith("."):
                 # handle relative import
                 rel_module_path = module_str.lstrip(".")  # remove dots
+                parts = rel_module_path.split(".")
+                file_name = parts[0]
+                func_name = parts[1]
+                rel_module_path = file_name+".py::"+func_name
                 full_module_path = Path(current_file_pkg) / rel_module_path
             else:
                 # absolute import
                 full_module_path = Path(module_str.replace(".", "/"))
 
             # Final repo-relative path
-            rel_path = "/" + full_module_path.as_posix() + ".py"
+            rel_path = "/" + full_module_path.as_posix()
+
 
             return f"{rel_path}::{fn}("
 
