@@ -99,10 +99,13 @@ useImperativeHandle(ref, () => ({
             fontWeight: isFolder ? 600 : 400,
             fontSize: 13,
             lineHeight: "1.5rem",
-            padding: "2px 0",
+            padding: "4px 6px",
             color: gitColor(node.git),
-            backgroundColor: isHighlighted ? "#fde68a" : "transparent",
+            backgroundColor: isHighlighted ? "rgba(156, 163, 175, 0.1)" : "transparent", // subtle gray overlay
+            borderLeft: isHighlighted ? "3px solid #3b82f6" : "3px solid transparent", // soft accent
             borderRadius: 4,
+            boxShadow: isHighlighted ? "inset 0 0 2px rgba(0,0,0,0.05)" : "none", // very subtle depth
+            transition: "background-color 0.2s, border-left 0.2s",
           }}
           onClick={() => isFolder && toggle(node.path)}
         >
