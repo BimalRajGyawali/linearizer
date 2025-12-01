@@ -202,6 +202,7 @@ function stripQualifiedCalls(line: string): string {
                 e.preventDefault();
                 e.stopPropagation();
                 handleClick(parent);
+                onFunctionClick?.(parent);
               }}
               style={{
                 width: "100%",
