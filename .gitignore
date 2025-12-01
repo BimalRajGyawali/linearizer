@@ -25,3 +25,5 @@ dist-ssr
 *.sw?
 functions.json
 parent_functions.json
+call_graph.json
+test.ipynb

@@ -6,7 +6,11 @@ import { prism as lightTheme } from "react-syntax-highlighter/dist/esm/styles/pr
 interface FlowPanelProps {
   parents: string[];
   functions: Record<string, string>;
+  expanded: Record<string, boolean>;
+  toggle: (id: string) => void;
+  onFunctionClick?: (fullId: string) => void; // new prop
 }
+
 
 // Memoized line to prevent flash
 const MemoizedLine: React.FC<{ code: string }> = React.memo(
@@ -34,18 +38,38 @@ const MemoizedLine: React.FC<{ code: string }> = React.memo(
   (prev, next) => prev.code === next.code
 );
 
-const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+const FlowPanel: React.FC<FlowPanelProps> = ({
+    parents,
+  functions,
+  expanded,
+  toggle,
+  onFunctionClick,
+
+}) => {
+  // const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [activeId, setActiveId] = useState<string | null>(null); // Track last clicked function
 
-  const toggle = useCallback((id: string) => {
-    setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
-  }, []);
+  // const toggle = useCallback((id: string) => {
+  //   setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
+  // }, []);
 
   const handleClick = useCallback((id: string) => {
     toggle(id);
     setActiveId(id); // mark as active for dashed border
   }, [toggle]);
+
+  const getDisplayFnName = (fullId: string) => {
+      let dispName =  fullId.split("::").pop() || fullId;
+      return dispName;
+  }
+
+function stripQualifiedCalls(line: string): string {
+  // Find patterns like   something.py::funcName(
+  return line.replace(
+    /[A-Za-z0-9_\/\.\-]+\.py::([A-Za-z_]\w*)\s*\(/g,
+    (_, fn) => fn + "("
+  );
+}
 
   const renderFunctionBody = useCallback(
     (body: string, prefixId: string, level = 0, omitFirstLine = false) => {
@@ -59,6 +83,7 @@ const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
             let rendered = false;
 
             for (const fnName of Object.keys(functions)) {
+              const displayFnName  = getDisplayFnName(fnName);
               if (!line) continue;
               if (line.includes(fnName) && !line.trim().startsWith("def ")) {
                 const id = `${lineId}-${fnName}`;
@@ -82,6 +107,7 @@ const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
                         e.preventDefault();
                         e.stopPropagation();
                         handleClick(id);
+                        onFunctionClick?.(fnName);
                       }}
                       style={{
                         cursor: "pointer",
@@ -95,7 +121,7 @@ const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
                         border: "none"
                     }}
                     >
-                      <MemoizedLine code={line} />
+                      <MemoizedLine code={line.replace(fnName, displayFnName)} />
                     </button>
 
                     <AnimatePresence>
@@ -138,7 +164,7 @@ const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
                     marginLeft: level * 16,
                   }}
                 >
-                  <MemoizedLine code={line} />
+                  <MemoizedLine code={stripQualifiedCalls(line)} />
                 </div>
               );
             }
@@ -176,6 +202,7 @@ const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
                 e.preventDefault();
                 e.stopPropagation();
                 handleClick(parent);
+                onFunctionClick?.(parent);
               }}
               style={{
                 width: "100%",
@@ -188,7 +215,7 @@ const FlowPanel: React.FC<FlowPanelProps> = ({ parents, functions }) => {
                 border: "1px solid #d1d5db",
               }}
             >
-              {parent}
+              {parent.split("::").pop() || parent}
             </button>
 
             <AnimatePresence initial={false}>
