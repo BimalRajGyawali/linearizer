@@ -6,7 +6,12 @@ import FlowPanel from "./components/HighlightedFlowPanel";
 
 export default function App() {
   const [parents, setParents] = useState<string[]>([]);
-  const [functions, setFunctions] = useState<Record<string, string>>({});
+  interface FunctionData {
+    body: string;
+    start_line: number;
+    file_path: string;
+  }
+  const [functions, setFunctions] = useState<Record<string, FunctionData>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   // Sidebar width and dragging
@@ -86,21 +91,19 @@ export default function App() {
   }, [collapsed]);
 
   // When a function call is clicked inside FlowPanel
-const handleFunctionClick = useCallback((fullId: string) => {
-  // extract file path before ::
-  let path = fullId.split("::")[0]; // "/backend/services/analytics_processor.py"
+  const handleFunctionClick = useCallback((fullId: string) => {
+    // extract file path before ::
+    let path = fullId.split("::")[0]; // "/backend/services/analytics_processor.py"
 
-  // Remove leading slash if your FileNode paths are relative to repo root
-  if (path.startsWith("/")) path = path.slice(1);
+    // Remove leading slash if your FileNode paths are relative to repo root
+    if (path.startsWith("/")) path = path.slice(1);
 
-  // Optional: prepend repo root if needed
-  const repoRoot = "/home/bimal/Documents/ucsd/research/code/trap/";
-  const fullPath = repoRoot + path;
+    // Optional: prepend repo root if needed
+    const repoRoot = "/home/bimal/Documents/ucsd/research/code/trap/";
+    const fullPath = repoRoot + path;
 
-  console.log("Highlighting file at:", fullPath);
-
-  fileExplorerRef.current?.highlightFile(fullPath);
-}, []);
+    fileExplorerRef.current?.highlightFile(fullPath);
+  }, []);
   return (
     <div
       style={{
@@ -183,12 +186,108 @@ const handleFunctionClick = useCallback((fullId: string) => {
       )}
 
       {/* CENTER PANEL */}
+      {/* CENTER PANEL */}
       <FlowPanel
         parents={parents}
         functions={functions}
         expanded={expanded}
         toggle={toggle}
         onFunctionClick={handleFunctionClick} // pass handler to FlowPanel
+        traceEvents={[
+          {
+            "event": "line",
+            "filename": "/home/bimal/Documents/ucsd/research/code/trap/backend/services/analytics.py",
+            "function": "get_metric_time_based_stats",
+            "line": 80,
+            "locals": {
+              "metric_name": "test",
+              "window_size": "daily"
+            }
+          },
+          {
+            "event": "line",
+            "filename": "/home/bimal/Documents/ucsd/research/code/trap/backend/services/analytics_processor.py",
+            "function": "process_time_based_stats",
+            "line": 85,
+            "locals": {
+              "metric_name": "test",
+              "window_size": "daily"
+            }
+          },
+          {
+            "event": "line",
+            "filename": "/home/bimal/Documents/ucsd/research/code/trap/backend/services/analytics_storage.py",
+            "function": "get_metric_values_with_timestamps",
+            "line": 53,
+            "locals": {
+              "metric_name": "test"
+            }
+          },
+          {
+            "event": "return",
+            "filename": "/home/bimal/Documents/ucsd/research/code/trap/backend/services/analytics_storage.py",
+            "function": "get_metric_values_with_timestamps",
+            "value": []
+          },
+          {
+            "event": "line",
+            "filename": "/home/bimal/Documents/ucsd/research/code/trap/backend/services/analytics_processor.py",
+            "function": "process_time_based_stats",
+            "line": 88,
+            "locals": {
+              "metric_name": "test",
+              "window_size": "daily",
+              "metric_data": []
+            }
+          },
+          {
+            "event": "line",
+            "filename": "/home/bimal/Documents/ucsd/research/code/trap/backend/services/analytics_aggregator.py",
+            "function": "aggregate_metric_stats_by_time_window",
+            "line": 50,
+            "locals": {
+              "metric_name": "test",
+              "metric_data": [],
+              "window_size": "daily"
+            }
+          },
+          {
+            "event": "line",
+            "filename": "/home/bimal/Documents/ucsd/research/code/trap/backend/services/analytics_aggregator.py",
+            "function": "aggregate_metric_stats_by_time_window",
+            "line": 51,
+            "locals": {
+              "metric_name": "test",
+              "metric_data": [],
+              "window_size": "daily"
+            }
+          },
+          {
+            "event": "return",
+            "filename": "/home/bimal/Documents/ucsd/research/code/trap/backend/services/analytics_aggregator.py",
+            "function": "aggregate_metric_stats_by_time_window",
+            "value": null
+          },
+          {
+            "event": "return",
+            "filename": "/home/bimal/Documents/ucsd/research/code/trap/backend/services/analytics_processor.py",
+            "function": "process_time_based_stats",
+            "value": null
+          },
+          {
+            "event": "return",
+            "filename": "/home/bimal/Documents/ucsd/research/code/trap/backend/services/analytics.py",
+            "function": "get_metric_time_based_stats",
+            "value": null
+          },
+          {
+            "event": "done",
+            "filename": "",
+            "function": "",
+            "line": 0,
+            "result": null
+          }
+        ]}
       />
     </div>
   );

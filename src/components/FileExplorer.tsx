@@ -37,56 +37,53 @@ const FileExplorer = forwardRef((props, ref: Ref<FileExplorerHandle>) => {
     }
   };
 
-useImperativeHandle(ref, () => ({
-  highlightFile: (path: string) => {
-    // Expand all parent folders
-    const openMap: Record<string, boolean> = {};
-    const expandParents = (node: FileNode | undefined) => {
-      if (!node) return false;
-      if (node.path === path) return true;
-      if (node.children) {
-        for (const c of node.children) {
-          if (expandParents(c)) {
-            openMap[node.path] = true;
-            return true;
+  useImperativeHandle(ref, () => ({
+    highlightFile: (path: string) => {
+      // Expand all parent folders
+      const openMap: Record<string, boolean> = {};
+      const expandParents = (node: FileNode | undefined) => {
+        if (!node) return false;
+        if (node.path === path) return true;
+        if (node.children) {
+          for (const c of node.children) {
+            if (expandParents(c)) {
+              openMap[node.path] = true;
+              return true;
+            }
           }
         }
+        return false;
+      };
+      expandParents(tree!);
+
+      // Merge with existing open state
+      setOpen((prev) => ({ ...prev, ...openMap }));
+
+      setHighlighted(path);
+
+      // Scroll to element
+      const el = document.getElementById(`file-${path}`);
+      if (el && containerRef.current) {
+        const container = containerRef.current;
+        const elTop = el.offsetTop;
+        const elBottom = elTop + el.offsetHeight;
+        const containerTop = container.scrollTop;
+        const containerBottom = containerTop + container.clientHeight;
+
+        if (elTop < containerTop) {
+          container.scrollTop = elTop - 8; // scroll up slightly
+        } else if (elBottom > containerBottom) {
+          container.scrollTop = elBottom - container.clientHeight + 8; // scroll down slightly
+        }
       }
-      return false;
-    };
-    expandParents(tree!);
-
-    // Merge with existing open state
-    setOpen((prev) => ({ ...prev, ...openMap }));
-
-    setHighlighted(path);
-
-    console.log(path)
-
-    // Scroll to element
-    const el = document.getElementById(`file-${path}`);
-    if (el && containerRef.current) {
-      const container = containerRef.current;
-      const elTop = el.offsetTop;
-      const elBottom = elTop + el.offsetHeight;
-      const containerTop = container.scrollTop;
-      const containerBottom = containerTop + container.clientHeight;
-
-      if (elTop < containerTop) {
-        container.scrollTop = elTop - 8; // scroll up slightly
-      } else if (elBottom > containerBottom) {
-        container.scrollTop = elBottom - container.clientHeight + 8; // scroll down slightly
-      }
-    }
-  },
-}));
+    },
+  }));
 
   const renderNode = (node: FileNode, depth = 0) => {
     const isFolder = node.type === "folder";
     const isOpen = open[node.path] || false;
     const isHighlighted = highlighted === node.path;
 
-    console.log(node.path)
 
     return (
       <div key={node.path} style={{ marginLeft: depth * 14, fontFamily: "Fira Code, monospace" }}>

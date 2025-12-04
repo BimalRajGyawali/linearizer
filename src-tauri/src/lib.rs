@@ -1,6 +1,8 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 use std::process::Command;
 use serde_json::{json, Value};
+use serde::Deserialize;
+
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -74,12 +76,52 @@ fn get_file_tree() -> Result<Value, String> {
 }
 
 
+
+#[derive(Deserialize)]
+struct TraceRequest {
+    pub entry_full_id: String,
+    pub args_json: String,
+}
+
+#[tauri::command]
+fn get_tracer_data(req: TraceRequest) -> Result<Value, String> {
+    // call your Python script
+    let python = std::env::var("PYTHON_BIN").unwrap_or("python3".to_string());
+    let script_path = "../tools/get_tracer.py";
+    let repo = "/home/bimal/Documents/ucsd/research/code/trap";
+    let args_json = req.args_json;
+
+    let output = Command::new(&python)
+        .arg(script_path)
+        .arg("--repo-root")
+        .arg(repo)
+        .arg("--args_json")
+        .arg(args_json)
+        .arg("--entry-full-id")
+        .arg(req.entry_full_id)
+        .output()
+        .map_err(|e| format!("failed to run python: {}", e))?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(err.to_string());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).map_err(|e| format!("JSON parse error: {}", e))?;
+
+    Ok(json)
+}
+
+
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     println!("[flowlens] run: starting tauri builder");
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, get_flows, get_file_tree])
+        .invoke_handler(tauri::generate_handler![greet, get_flows, get_file_tree, get_tracer_data])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
