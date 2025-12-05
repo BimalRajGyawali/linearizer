@@ -1,7 +1,7 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::io::{BufRead, BufReader, Write};
 use serde_json::{json, Value};
-use serde::Deserialize;
 
 
 #[tauri::command]
@@ -77,41 +77,57 @@ fn get_file_tree() -> Result<Value, String> {
 
 
 
-#[derive(Deserialize)]
-struct TraceRequest {
-    pub entry_full_id: String,
-    pub args_json: String,
-}
 
+/// Execute Python script for one line and return a single JSON event.
+/// `repo` - repo root
+/// `entry_full_id` - like "/backend/services/analytics.py::get_metric_time_based_stats"
+/// `args_json` - JSON string with args and kwargs
 #[tauri::command]
-fn get_tracer_data(req: TraceRequest) -> Result<Value, String> {
-    // call your Python script
-    let python = std::env::var("PYTHON_BIN").unwrap_or("python3".to_string());
-    let script_path = "../tools/get_tracer.py";
+fn get_next_tracer_event(
+    entry_full_id: &str,
+    args_json: &str
+    ) -> Result<Value, String> {
+
     let repo = "/home/bimal/Documents/ucsd/research/code/trap";
-    let args_json = req.args_json;
-
-    let output = Command::new(&python)
+    let python = std::env::var("PYTHON_BIN").unwrap_or_else(|_| "python3".to_string());
+    let script_path = "../tools/get_tracer.py";
+    // Spawn python process
+    let mut child = Command::new(&python)
         .arg(script_path)
-        .arg("--repo-root")
-        .arg(repo)
-        .arg("--args_json")
+        .arg(&repo)
+        .arg(entry_full_id)
         .arg(args_json)
-        .arg("--entry-full-id")
-        .arg(req.entry_full_id)
-        .output()
-        .map_err(|e| format!("failed to run python: {}", e))?;
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn Python: {}", e))?;
 
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        return Err(err.to_string());
+    let mut stdin = child.stdin.take().ok_or("Failed to open stdin")?;
+    let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
+    let mut reader = BufReader::new(stdout);
+
+    // Read a single line (one JSON event)
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .map_err(|e| format!("Failed to read Python stdout: {}", e))?;
+
+    if line.trim().is_empty() {
+        return Err("Empty event received".to_string());
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value =
-        serde_json::from_str(&stdout).map_err(|e| format!("JSON parse error: {}", e))?;
+    let event: Value =
+        serde_json::from_str(&line).map_err(|e| format!("Failed to parse JSON: {} -- line: {}", e, line))?;
 
-    Ok(json)
+     println!("{}", event);
+
+    // Send newline to continue to next line
+    stdin
+        .write_all(b"\n")
+        .map_err(|e| format!("Failed to write to Python stdin: {}", e))?;
+    stdin.flush().map_err(|e| format!("Failed to flush stdin: {}", e))?;
+
+    Ok(event)
 }
 
 
@@ -121,7 +137,7 @@ pub fn run() {
     println!("[flowlens] run: starting tauri builder");
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, get_flows, get_file_tree, get_tracer_data])
+        .invoke_handler(tauri::generate_handler![greet, get_flows, get_file_tree, get_next_tracer_event])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

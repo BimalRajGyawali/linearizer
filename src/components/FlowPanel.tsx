@@ -1,115 +1,213 @@
-import React from "react";
+import React, { useState, useCallback, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { prism as lightTheme } from "react-syntax-highlighter/dist/esm/styles/prism";
+import {invoke} from "@tauri-apps/api/core";
+
+interface TraceEvent {
+  event: string;
+  filename: string;
+  function: string;
+  line?: number;
+  locals?: Record<string, any>;
+  value?: any;
+  result?: any;
+}
+
+interface FunctionData {
+  body: string;
+  start_line: number;
+  file_path: string;
+}
 
 interface FlowPanelProps {
   parents: string[];
-  functions: Record<string, string>;
+  functions: Record<string, FunctionData>;
   expanded: Record<string, boolean>;
   toggle: (id: string) => void;
+  onFunctionClick?: (fullId: string) => void;
 }
 
-export default function FlowPanel({ parents, functions, expanded, toggle }: FlowPanelProps) {
-  const renderFunctionBody = (
-    body: string,
-    prefixId: string,
-    level = 0,
-    omitFirstLine = false
-  ) => {
-    const lines = body ? body.split("\n") : [];
-    const renderLines = omitFirstLine ? lines.slice(1) : lines;
+const MemoizedLine: React.FC<{ code: string }> = React.memo(
+  ({ code }) => (
+    <SyntaxHighlighter
+      language="python"
+      style={lightTheme}
+      PreTag="div"
+      customStyle={{
+        margin: 0,
+        padding: 0,
+        background: "transparent",
+        display: "inline",
+        fontFamily: "Jetbrains Mono, monospace",
+        fontSize: 16,
+        lineHeight: "1.4",
+        fontWeight: 500,
+        whiteSpace: "pre-wrap",
+      }}
+      codeTagProps={{ style: { whiteSpace: "pre-wrap", display: "inline" } }}
+    >
+      {code}
+    </SyntaxHighlighter>
+  ),
+  (prev, next) => prev.code === next.code
+);
 
-    return (
-      <div style={{ position: "relative" }}>
-        {renderLines.map((line, idx) => {
-          let lineRendered = false;
+const FlowPanel: React.FC<FlowPanelProps> = ({
+  parents,
+  functions,
+  expanded,
+  toggle,
+  onFunctionClick,
+}) => {
+  const [cursorLine, setCursorLine] = useState<{ id: string; lineNo: number; funcId: string } | null>(null);
+  const [activeEvent, setActiveEvent] = useState<TraceEvent | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(null); // last clicked function
+  const lineRefs = useRef<Record<string, HTMLDivElement>>({});
 
-          for (const fnName of Object.keys(functions)) {
-            if (!line) continue;
-            if (line.includes(fnName) && !line.trim().startsWith("def ")) {
-              const id = `${prefixId}:${fnName}:${idx}`;
-              const parts = line.split(fnName);
-              const before = parts[0] ?? "";
-              const after = parts.slice(1).join(fnName) ?? "";
-              const isExpanded = !!expanded[id];
-              lineRendered = true;
+  const getDisplayFnName = (fullId: string) => fullId.split("::").pop() || fullId;
 
-              return (
-                <div key={id} style={{ marginBottom: 6, position: "relative" }}>
-                  <div
-                    style={{
-                      display: "inline-block",
-                      borderRadius: 4,
-                      backgroundColor: isExpanded ? "rgba(0,0,0,0.05)" : "transparent",
-                      fontWeight: 600,
-                      cursor: "pointer",
-                      fontFamily: "Fira Code, monospace",
-                      fontSize: 14,
-                      marginTop: 2,
-                      marginBottom: 2,
-                      opacity: isExpanded ? 0.85 : 1,
-                      lineHeight: "1.5rem",
-                      whiteSpace: "pre-wrap",
-                    }}
-                    tabIndex={0}
-                    onClick={() => toggle(id)}
-                    onKeyDown={(e) => e.key === "Enter" && toggle(id)}
-                  >
-                    <span>{before}</span>
-                    <span style={{ textDecoration: "underline" }}>{fnName}</span>
-                    <span>{after}</span>
-                  </div>
+  function stripQualifiedCalls(line: string) {
+    return line.replace(/[A-Za-z0-9_\/\.\-]+\.py::([A-Za-z_]\w*)\s*\(/g, (_, fn) => fn + "(");
+  }
 
-                  <AnimatePresence>
-                    {isExpanded && functions[fnName] && (
-                      <motion.div
-                        initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: "auto" }}
-                        exit={{ opacity: 0, height: 0 }}
-                        style={{ marginLeft: 16, marginTop: 6, overflow: "hidden" }}
-                      >
-                        <div
-                          style={{
-                            backgroundColor: "#f7f7f7",
-                            padding: 8,
-                            borderRadius: 6,
-                            fontFamily: "Fira Code, monospace",
-                            fontSize: 14,
-                            lineHeight: "1.5rem",
-                            color: "#333",
-                            boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
-                          }}
-                        >
-                          {renderFunctionBody(functions[fnName], id, level + 1, true)}
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-              );
-            }
-          }
+  // Fetch line event from Rust/Python
+  const fetchLineEvent = useCallback(async (funcId: string, lineNo: number) => {
+    try {
+      const result: any = await invoke("get_next_tracer_event", {
+          entryFullId: funcId,
+          line: lineNo,
+          argsJson: '{"kwargs": {"metric_name": "test", "period": "daily"}}'
+      });
 
-          if (!lineRendered) {
+        console.log({
+          entryFullId: funcId,
+          line: lineNo,
+          argsJson: '{"metric_name": "daily", "period": "last_7_days"}',
+
+      })
+      if (result?.events?.length > 0) return result.events[0];
+    } catch (e) {
+      console.error("Error fetching line event:", e);
+    }
+    return null;
+  }, []);
+
+  // Handle cursor move
+  const handleCursorMove = useCallback(
+    async (nextLineId: string, nextLineNo: number, funcId: string) => {
+      setCursorLine({ id: nextLineId, lineNo: nextLineNo, funcId });
+
+      // fetch event for this line
+      const event = await fetchLineEvent(funcId, nextLineNo);
+      setActiveEvent(event);
+
+      // scroll line into view
+      const el = lineRefs.current[nextLineId];
+      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    },
+    [fetchLineEvent]
+  );
+
+  // Arrow key navigation
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!cursorLine) return;
+      const allLines = Object.keys(lineRefs.current);
+      const currentIndex = allLines.indexOf(cursorLine.id);
+      if (currentIndex === -1) return;
+
+      let nextIndex = currentIndex;
+      if (e.key === "ArrowDown") nextIndex = Math.min(currentIndex + 1, allLines.length - 1);
+      else if (e.key === "ArrowUp") nextIndex = Math.max(currentIndex - 1, 0);
+
+      const nextId = allLines[nextIndex];
+      const nextLineNo = parseInt(nextId.split("-").pop() || "0");
+      const funcId = nextId.split("-")[0]; // function fullId
+
+      handleCursorMove(nextId, nextLineNo, funcId);
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [cursorLine, handleCursorMove]);
+
+  const renderFunctionBody = useCallback(
+    (fnData: FunctionData, funcId: string, level = 0, omitFirstLine = false) => {
+      const { body, start_line } = fnData;
+      const lines = body.split("\n");
+      const visible = omitFirstLine ? lines.slice(1) : lines;
+      const offset = omitFirstLine ? 1 : 0;
+
+      return (
+        <div style={{ position: "relative" }}>
+          {visible.map((line, idx) => {
+            const lineId = `${funcId}-${idx}`;
+            const currentLineNo = start_line + idx + offset;
+
+            const refCallback = (el: HTMLDivElement) => {
+              if (el) lineRefs.current[lineId] = el;
+            };
+
+            const isCursor = cursorLine?.id === lineId;
+
             return (
               <div
-                key={`${prefixId}:${idx}`}
+                key={lineId}
+                ref={refCallback}
                 style={{
-                  fontFamily: "Fira Code, monospace",
-                  fontSize: 14,
-                  lineHeight: "1.5rem",
+                  marginBottom: 2,
                   marginLeft: level * 16,
-                  whiteSpace: "pre-wrap",
+                  display: "flex",
+                  flexDirection: "row",
+                  alignItems: "flex-start",
+                  backgroundColor: isCursor ? "rgba(59,130,246,0.1)" : "transparent",
+                  borderRadius: 4,
+                  paddingLeft: 4,
+                  cursor: "pointer",
                 }}
+                onClick={() => handleCursorMove(lineId, currentLineNo, funcId)}
               >
-                {line}
+                <div
+                  style={{
+                    marginRight: 12,
+                    color: "#9ca3af",
+                    minWidth: 32,
+                    textAlign: "right",
+                    userSelect: "none",
+                    fontSize: 12,
+                    fontFamily: "monospace",
+                    paddingTop: 2,
+                  }}
+                >
+                  {currentLineNo}
+                </div>
+                <div style={{ flex: 1 }}>
+                  <MemoizedLine code={stripQualifiedCalls(line)} />
+                  {isCursor && activeEvent && (
+                    <div
+                      style={{
+                        fontSize: 11,
+                        fontFamily: "monospace",
+                        color: "#111827",
+                        backgroundColor: "#f3f4f6",
+                        padding: 4,
+                        borderRadius: 4,
+                        marginTop: 2,
+                      }}
+                    >
+                      {JSON.stringify(activeEvent, null, 2)}
+                    </div>
+                  )}
+                </div>
               </div>
             );
-          }
-          return null;
-        })}
-      </div>
-    );
-  };
+          })}
+        </div>
+      );
+    },
+    [cursorLine, activeEvent, handleCursorMove]
+  );
 
   return (
     <div
@@ -117,33 +215,43 @@ export default function FlowPanel({ parents, functions, expanded, toggle }: Flow
         flex: 1,
         padding: 16,
         overflowY: "auto",
-        backgroundColor: "#ffffff",
+        backgroundColor: "#f9fafb",
+        color: "#111827",
+        fontFamily: "Fira Code, monospace",
       }}
     >
       {parents.length === 0 && <p>Loading parents...</p>}
 
       {parents.map((parent) => {
-        const body = functions[parent];
+        const fnData = functions[parent];
         const isExpanded = !!expanded[parent];
-
         return (
           <div key={parent} style={{ marginBottom: 12 }}>
-            <div
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                toggle(parent);
+                setActiveId(parent);
+                onFunctionClick?.(parent);
+              }}
               style={{
-                backgroundColor: "#e5e7eb",
+                width: "100%",
+                textAlign: "left",
+                backgroundColor: isExpanded ? "#e0f2fe" : "#f3f4f6",
                 padding: "8px 12px",
                 borderRadius: 6,
-                fontFamily: "Fira Code, monospace",
                 fontWeight: 600,
                 cursor: "pointer",
+                border: "1px solid #d1d5db",
               }}
-              onClick={() => toggle(parent)}
             >
-              {parent}
-            </div>
+              {parent.split("::").pop() || parent}
+            </button>
 
-            <AnimatePresence>
-              {isExpanded && body && (
+            <AnimatePresence initial={false}>
+              {isExpanded && fnData && (
                 <motion.div
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: "auto" }}
@@ -152,17 +260,17 @@ export default function FlowPanel({ parents, functions, expanded, toggle }: Flow
                 >
                   <div
                     style={{
-                      backgroundColor: "#f7f7f7",
-                      padding: 8,
+                      backgroundColor: "#ffffff",
+                      padding: 12,
                       borderRadius: 6,
-                      fontFamily: "Fira Code, monospace",
                       fontSize: 14,
-                      lineHeight: "1.5rem",
-                      color: "#333",
-                      boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+                      lineHeight: "1.45",
+                      color: "#111827",
+                      boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
+                      borderLeft: "1px solid #3b82f6",
                     }}
                   >
-                    {renderFunctionBody(body, parent, 0, false)}
+                    {renderFunctionBody(fnData, parent)}
                   </div>
                 </motion.div>
               )}
@@ -172,4 +280,6 @@ export default function FlowPanel({ parents, functions, expanded, toggle }: Flow
       })}
     </div>
   );
-}
+};
+
+export default React.memo(FlowPanel);
