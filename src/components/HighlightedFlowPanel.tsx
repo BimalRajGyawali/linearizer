@@ -55,6 +55,35 @@ const MemoizedLine: React.FC<{ code: string }> = React.memo(
   (prev, next) => prev.code === next.code
 );
 
+const renderEvents = (events: TraceEvent[]) => {
+  console.log(JSON.stringify(events, null, 2));
+  if (!events || events.length === 0) return null;
+  return (
+    <div
+      style={{
+        marginLeft: 12,
+        fontSize: 11,
+        fontFamily: "monospace",
+        color: "#374151",
+        backgroundColor: "#f3f4f6",
+        padding: "6px",
+        borderRadius: 4,
+        border: "1px solid #d1d5db",
+        maxWidth: "500px",
+        overflowX: "auto",
+        whiteSpace: "pre",
+      }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {events.map((ev, i) => (
+        <div key={i} style={{ borderBottom: i < events.length - 1 ? "1px dashed #d1d5db" : "none", paddingBottom: 4, marginBottom: 4 }}>
+          {JSON.stringify(ev, null, 2)}
+        </div>
+      ))}
+    </div>
+  );
+};
+
 const FlowPanel: React.FC<FlowPanelProps> = ({
   parents,
   functions,
@@ -144,7 +173,7 @@ const FlowPanel: React.FC<FlowPanelProps> = ({
                       borderRadius: 2,
                     }}
                   >
-                    <div style={{ display: "flex", flexDirection: "row", alignItems: "baseline" }}>
+                    <div style={{ display: "flex", flexDirection: "row", alignItems: "flex-start" }}>
                       <span style={{
                         marginRight: 12,
                         color: "#9ca3af",
@@ -152,33 +181,37 @@ const FlowPanel: React.FC<FlowPanelProps> = ({
                         textAlign: "right",
                         userSelect: "none",
                         fontSize: 12,
-                        fontFamily: "monospace"
+                        fontFamily: "monospace",
+                        paddingTop: 4
                       }}>
                         {currentLineNo}
                       </span>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          handleClick(id);
-                          onFunctionClick?.(fnName);
-                        }}
-                        style={{
-                          cursor: "pointer",
-                          display: "inline-block",
-                          borderRadius: 4,
-                          padding: "2px 4px",
-                          fontFamily: "Fira Code, monospace",
-                          fontSize: 14,
-                          lineHeight: "1.45",
-                          background: isExpanded ? "rgba(59,130,246,0.1)" : "transparent",
-                          border: "none",
-                          textAlign: "left"
-                        }}
-                      >
-                        <MemoizedLine code={line.replace(fnName, displayFnName)} />
-                      </button>
+                      <div style={{ flex: 1 }}>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            handleClick(id);
+                            onFunctionClick?.(fnName);
+                          }}
+                          style={{
+                            cursor: "pointer",
+                            display: "inline-block",
+                            borderRadius: 4,
+                            padding: "2px 4px",
+                            fontFamily: "Fira Code, monospace",
+                            fontSize: 14,
+                            lineHeight: "1.45",
+                            background: isExpanded ? "rgba(59,130,246,0.1)" : "transparent",
+                            border: "none",
+                            textAlign: "left"
+                          }}
+                        >
+                          <MemoizedLine code={line.replace(fnName, displayFnName)} />
+                        </button>
+                      </div>
+                      {renderEvents(events)}
                     </div>
 
                     <AnimatePresence>
@@ -239,42 +272,7 @@ const FlowPanel: React.FC<FlowPanelProps> = ({
                   <div style={{ flex: 1 }}>
                     <MemoizedLine code={stripQualifiedCalls(line)} />
                   </div>
-                  {events.length > 0 && (
-                    <div
-                      style={{
-                        marginLeft: 12,
-                        fontSize: 12,
-                        fontFamily: "monospace",
-                        color: "#6b7280",
-                        backgroundColor: "#f3f4f6",
-                        padding: "2px 6px",
-                        borderRadius: 4,
-                        border: "1px solid #e5e7eb",
-                        maxWidth: "400px",
-                        overflowX: "auto",
-                      }}
-                    >
-                      {events.map((ev, i) => (
-                        <div key={i}>
-                          {ev.event === "return" ? (
-                            <span style={{ color: "#059669" }}>
-                              return {JSON.stringify(ev.value)}
-                            </span>
-                          ) : (
-                            <span>
-                              {ev.locals &&
-                                Object.entries(ev.locals).map(([k, v]) => (
-                                  <span key={k} style={{ marginRight: 8 }}>
-                                    <span style={{ color: "#2563eb" }}>{k}</span>=
-                                    <span style={{ color: "#d97706" }}>{JSON.stringify(v)}</span>
-                                  </span>
-                                ))}
-                            </span>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                  {renderEvents(events)}
                 </div>
               );
             }

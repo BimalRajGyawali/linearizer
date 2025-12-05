@@ -13,6 +13,7 @@ export default function App() {
   }
   const [functions, setFunctions] = useState<Record<string, FunctionData>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [traceEvents, setTraceEvents] = useState<any[]>([]);
 
   // Sidebar width and dragging
   const [sidebarWidth, setSidebarWidth] = useState(280);
@@ -43,8 +44,29 @@ export default function App() {
     }
   };
 
+  const fetchTrace = async () => {
+    try {
+      const result: any = await invoke("get_tracer_data", {
+        req: {
+          entry_full_id: "/backend/services/analytics.py::get_metric_time_based_stats",
+          args_json: JSON.stringify({
+            args: [],
+            kwargs: { metric_name: "test", window_size: "daily" },
+          }),
+        },
+      });
+      console.log("Trace result:", result);
+      if (result && result.events) {
+        setTraceEvents(result.events);
+      }
+    } catch (e) {
+      console.error("Error fetching trace:", e);
+    }
+  };
+
   useEffect(() => {
     fetchFlows();
+    fetchTrace();
   }, []);
 
   // Sidebar collapse/expand
@@ -193,101 +215,7 @@ export default function App() {
         expanded={expanded}
         toggle={toggle}
         onFunctionClick={handleFunctionClick} // pass handler to FlowPanel
-        traceEvents={[
-          {
-            "event": "line",
-            "filename": "/home/bimal/Documents/ucsd/research/code/trap/backend/services/analytics.py",
-            "function": "get_metric_time_based_stats",
-            "line": 80,
-            "locals": {
-              "metric_name": "test",
-              "window_size": "daily"
-            }
-          },
-          {
-            "event": "line",
-            "filename": "/home/bimal/Documents/ucsd/research/code/trap/backend/services/analytics_processor.py",
-            "function": "process_time_based_stats",
-            "line": 85,
-            "locals": {
-              "metric_name": "test",
-              "window_size": "daily"
-            }
-          },
-          {
-            "event": "line",
-            "filename": "/home/bimal/Documents/ucsd/research/code/trap/backend/services/analytics_storage.py",
-            "function": "get_metric_values_with_timestamps",
-            "line": 53,
-            "locals": {
-              "metric_name": "test"
-            }
-          },
-          {
-            "event": "return",
-            "filename": "/home/bimal/Documents/ucsd/research/code/trap/backend/services/analytics_storage.py",
-            "function": "get_metric_values_with_timestamps",
-            "value": []
-          },
-          {
-            "event": "line",
-            "filename": "/home/bimal/Documents/ucsd/research/code/trap/backend/services/analytics_processor.py",
-            "function": "process_time_based_stats",
-            "line": 88,
-            "locals": {
-              "metric_name": "test",
-              "window_size": "daily",
-              "metric_data": []
-            }
-          },
-          {
-            "event": "line",
-            "filename": "/home/bimal/Documents/ucsd/research/code/trap/backend/services/analytics_aggregator.py",
-            "function": "aggregate_metric_stats_by_time_window",
-            "line": 50,
-            "locals": {
-              "metric_name": "test",
-              "metric_data": [],
-              "window_size": "daily"
-            }
-          },
-          {
-            "event": "line",
-            "filename": "/home/bimal/Documents/ucsd/research/code/trap/backend/services/analytics_aggregator.py",
-            "function": "aggregate_metric_stats_by_time_window",
-            "line": 51,
-            "locals": {
-              "metric_name": "test",
-              "metric_data": [],
-              "window_size": "daily"
-            }
-          },
-          {
-            "event": "return",
-            "filename": "/home/bimal/Documents/ucsd/research/code/trap/backend/services/analytics_aggregator.py",
-            "function": "aggregate_metric_stats_by_time_window",
-            "value": null
-          },
-          {
-            "event": "return",
-            "filename": "/home/bimal/Documents/ucsd/research/code/trap/backend/services/analytics_processor.py",
-            "function": "process_time_based_stats",
-            "value": null
-          },
-          {
-            "event": "return",
-            "filename": "/home/bimal/Documents/ucsd/research/code/trap/backend/services/analytics.py",
-            "function": "get_metric_time_based_stats",
-            "value": null
-          },
-          {
-            "event": "done",
-            "filename": "",
-            "function": "",
-            "line": 0,
-            "result": null
-          }
-        ]}
+        traceEvents={traceEvents}
       />
     </div>
   );
