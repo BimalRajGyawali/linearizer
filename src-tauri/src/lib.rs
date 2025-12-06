@@ -85,50 +85,74 @@ fn get_file_tree() -> Result<Value, String> {
 #[tauri::command]
 fn get_next_tracer_event(
     entry_full_id: &str,
+    line_number: i32,
     args_json: &str
-    ) -> Result<Value, String> {
+) -> Result<Value, String> {
+
+    println!("Requested next trace event for line: {}", line_number);
 
     let repo = "/home/bimal/Documents/ucsd/research/code/trap";
     let python = std::env::var("PYTHON_BIN").unwrap_or_else(|_| "python3".to_string());
     let script_path = "../tools/get_tracer.py";
-    // Spawn python process
-    let mut child = Command::new(&python)
-        .arg(script_path)
-        .arg(&repo)
-        .arg(entry_full_id)
-        .arg(args_json)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to spawn Python: {}", e))?;
 
-    let mut stdin = child.stdin.take().ok_or("Failed to open stdin")?;
-    let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
+    println!("{}", entry_full_id);
+
+    // ----------------------------------------
+    // Start Python step-tracer
+    // ----------------------------------------
+    let mut child = Command::new(&python)
+    .arg(script_path)
+    .arg("--repo_root")
+    .arg(&repo)
+    .arg("--entry_full_id")
+    .arg(entry_full_id)
+    .arg("--args_json")
+    .arg(args_json)
+    .arg("--stop_line")
+    .arg(line_number.to_string()) // <-- pass the clicked line
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .spawn()
+    .map_err(|e| format!("Failed to spawn Python: {}", e))?;
+
+    let mut stdin = child.stdin.take().ok_or("Failed to open stdin for Python")?;
+    let stdout = child.stdout.take().ok_or("Failed to capture Python stdout")?;
     let mut reader = BufReader::new(stdout);
 
-    // Read a single line (one JSON event)
-    let mut line = String::new();
-    reader
-        .read_line(&mut line)
-        .map_err(|e| format!("Failed to read Python stdout: {}", e))?;
+    // ----------------------------------------
+    // Read the FIRST trace event (one line)
+    // ----------------------------------------
+    let mut event_line = String::new();
 
-    if line.trim().is_empty() {
-        return Err("Empty event received".to_string());
+    let bytes_read = reader
+        .read_line(&mut event_line)
+        .map_err(|e| format!("Error reading Python stdout: {}", e))?;
+
+    if bytes_read == 0 {
+        return Err("Python process ended unexpectedly".to_string());
     }
 
-    let event: Value =
-        serde_json::from_str(&line).map_err(|e| format!("Failed to parse JSON: {} -- line: {}", e, line))?;
+    if event_line.trim().is_empty() {
+        return Err("Received empty tracer event".to_string());
+    }
 
-     println!("{}", event);
+    // Parse JSON from Python tracer
+    let event: Value = serde_json::from_str(event_line.trim())
+        .map_err(|e| format!("JSON parse error: {} -- line: {}", e, event_line))?;
 
-    // Send newline to continue to next line
+    // ----------------------------------------
+    // Tell Python to advance one step
+    // ----------------------------------------
     stdin
         .write_all(b"\n")
         .map_err(|e| format!("Failed to write to Python stdin: {}", e))?;
-    stdin.flush().map_err(|e| format!("Failed to flush stdin: {}", e))?;
+    stdin
+        .flush()
+        .map_err(|e| format!("Failed to flush Python stdin: {}", e))?;
 
     Ok(event)
 }
+
 
 
 

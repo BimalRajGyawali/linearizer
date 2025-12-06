@@ -5,8 +5,12 @@ import json
 import importlib.util
 import types
 import traceback
+import threading
 import bdb
 
+# --------------------------
+# Helpers
+# --------------------------
 def import_module_from_path(repo_root: str, rel_path: str):
     rel_path = rel_path.lstrip("/")
     abs_path = os.path.join(repo_root, rel_path)
@@ -36,73 +40,89 @@ def safe_json(value):
         return f"<unserializable {type(value).__name__}>"
 
 # --------------------------
-# Procedural tracer using bdb
+# Persistent Debugger
 # --------------------------
-def run_with_stop_line(fn, args, kwargs, stop_line, filename):
-    events = []
-    debugger = bdb.Bdb()
+class PersistentDebugger(bdb.Bdb):
+    def __init__(self):
+        super().__init__()
+        self.wait_event = threading.Event()
+        self.target_line = None
+        self.last_event = None
+        self.running_thread = None
 
-    def trace(frame):
+    def user_line(self, frame):
         lineno = frame.f_lineno
         fname = os.path.abspath(frame.f_code.co_filename)
-        func = frame.f_code.co_name
+
+        # Only stop for the main target file
+        if fname != self.target_file:
+            return
+
+        funcname = frame.f_code.co_name
         locals_snapshot = {k: safe_json(v) for k, v in frame.f_locals.items()}
 
-        events.append({
+        self.last_event = {
             "event": "line",
             "filename": fname,
-            "function": func,
+            "function": funcname,
             "line": lineno,
             "locals": locals_snapshot
-        })
+        }
 
-        if lineno >= stop_line and fname == filename:
-            print(f"Stopping at {lineno} in {filename}")
-            debugger.set_quit()  # halts execution
+        # Stop if we've reached the target line
+        if self.target_line is not None and lineno >= self.target_line:
+            self.set_step()
+            self.wait_event.clear()
+            self.wait_event.wait()
 
-    debugger.user_line = trace
-    debugger.runctx(
-        "res = fn(*args, **kwargs)",
-        globals={"fn": fn, "args": args, "kwargs": kwargs},
-        locals={}
-    )
-    return events
+    def continue_until(self, line):
+        self.target_line = line
+        self.wait_event.set()
 
+    def run_function_once(self, fn, args=None, kwargs=None):
+        args = args or []
+        kwargs = kwargs or {}
+        self.running_thread = threading.Thread(
+            target=lambda: self.runctx(
+                "fn(*args, **kwargs)",
+                globals={"fn": fn, "args": args, "kwargs": kwargs},
+                locals={}
+            )
+        )
+        self.running_thread.start()
+
+# --------------------------
+# Main CLI
+# --------------------------
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--repo_root", required=False, default="/home/bimal/Documents/ucsd/research/code/trap")
-    parser.add_argument("--entry_full_id", required=False, default="backend/services/analytics.py::get_metric_period_analytics")
-    parser.add_argument("--args_json", required=False, default='{"kwargs": {"metric_name": "test", "period": "last_7_days"}}')
-    parser.add_argument("--stop_line", required=False, type=int, default=103)
-
+    parser.add_argument(
+        "--repo_root",
+        required=False,
+        default="/home/bimal/Documents/ucsd/research/code/trap"
+    )
+    parser.add_argument(
+        "--entry_full_id",
+        required=False,
+        default="backend/services/analytics.py::get_metric_period_analytics"
+    )
+    parser.add_argument(
+        "--args_json",
+        required=False,
+        default='{"kwargs": {"metric_name": "test", "period": "last_7_days"}}'
+    )
+    parser.add_argument(
+        "--stop_line",
+        required=False,
+        type=int,
+        default=103
+    )
     args = parser.parse_args()
 
     repo_root = args.repo_root
     entry_full_id = args.entry_full_id
     args_json = args.args_json
     stop_line = args.stop_line
-
-    if "::" not in entry_full_id:
-        print(json.dumps({"error": "invalid entry id"}))
-        sys.exit(1)
-
-    rel_path, fn_name = entry_full_id.split("::", 1)
-    abs_path = os.path.join(repo_root, rel_path.lstrip("/"))
-    if not os.path.isfile(abs_path):
-        print(json.dumps({"error": "file not found", "file": abs_path}))
-        sys.exit(1)
-
-    try:
-        mod = import_module_from_path(repo_root, rel_path.lstrip("/"))
-    except Exception as e:
-        print(json.dumps({"error": "module import failed", "exception": str(e), "traceback": traceback.format_exc()}))
-        sys.exit(1)
-
-    if not hasattr(mod, fn_name):
-        print(json.dumps({"error": "function not found", "function": fn_name}))
-        sys.exit(1)
-
-    fn = getattr(mod, fn_name)
 
     args_list = []
     kwargs_dict = {}
@@ -114,12 +134,56 @@ def main():
         except Exception:
             pass
 
+    if "::" not in entry_full_id:
+        print(json.dumps({"error": "invalid entry id"}))
+        sys.exit(1)
+
+    rel_path, fn_name = entry_full_id.split("::", 1)
+    abs_path = os.path.join(repo_root, rel_path.lstrip("/"))
+
+    if not os.path.isfile(abs_path):
+        print(json.dumps({"error": "file not found", "file": abs_path}))
+        sys.exit(1)
+
     try:
-        events = run_with_stop_line(fn, args_list, kwargs_dict, stop_line, abs_path)
-        events = events[1:]
-        print(json.dumps({"events": events}, indent=2))
+        mod = import_module_from_path(repo_root, rel_path)
     except Exception as e:
-        print(json.dumps({"event": "error", "error": str(e), "traceback": traceback.format_exc()}), flush=True)
+        print(json.dumps({
+            "error": "module import failed",
+            "exception": str(e),
+            "traceback": traceback.format_exc()
+        }))
+        sys.exit(1)
+
+    if not hasattr(mod, fn_name):
+        print(json.dumps({"error": "function not found", "function": fn_name}))
+        sys.exit(1)
+
+    fn = getattr(mod, fn_name)
+
+    dbg = PersistentDebugger()
+    dbg.target_file = abs_path  # Only this file counts for stop_line
+    dbg.repo_root = repo_root
+
+    dbg.run_function_once(fn, args_list, kwargs_dict)
+
+    # Run until initial stop_line
+    dbg.continue_until(stop_line)
+    dbg.wait_event.wait()
+    print(json.dumps(dbg.last_event, indent=2), flush=True)
+
+    # Interactive stepping
+    while True:
+        try:
+            user_input = input("Enter line to continue (or blank/0 to exit): ").strip()
+            if not user_input or user_input == "0":
+                break
+            line = int(user_input)
+            dbg.continue_until(line)
+            dbg.wait_event.wait()
+            print(json.dumps(dbg.last_event, indent=2))
+        except Exception as e:
+            print("Error:", e)
 
 if __name__ == "__main__":
     main()

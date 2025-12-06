@@ -76,16 +76,11 @@ const FlowPanel: React.FC<FlowPanelProps> = ({
     try {
       const result: any = await invoke("get_next_tracer_event", {
           entryFullId: funcId,
-          line: lineNo,
-          argsJson: '{"kwargs": {"metric_name": "test", "period": "daily"}}'
+          lineNumber: lineNo,
+          argsJson: '{"kwargs": {"metric_name": "test", "period": "last_7_days"}}'
       });
 
-        console.log({
-          entryFullId: funcId,
-          line: lineNo,
-          argsJson: '{"metric_name": "daily", "period": "last_7_days"}',
-
-      })
+        console.log(result)
       if (result?.events?.length > 0) return result.events[0];
     } catch (e) {
       console.error("Error fetching line event:", e);
@@ -108,29 +103,6 @@ const FlowPanel: React.FC<FlowPanelProps> = ({
     },
     [fetchLineEvent]
   );
-
-  // Arrow key navigation
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (!cursorLine) return;
-      const allLines = Object.keys(lineRefs.current);
-      const currentIndex = allLines.indexOf(cursorLine.id);
-      if (currentIndex === -1) return;
-
-      let nextIndex = currentIndex;
-      if (e.key === "ArrowDown") nextIndex = Math.min(currentIndex + 1, allLines.length - 1);
-      else if (e.key === "ArrowUp") nextIndex = Math.max(currentIndex - 1, 0);
-
-      const nextId = allLines[nextIndex];
-      const nextLineNo = parseInt(nextId.split("-").pop() || "0");
-      const funcId = nextId.split("-")[0]; // function fullId
-
-      handleCursorMove(nextId, nextLineNo, funcId);
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [cursorLine, handleCursorMove]);
 
   const renderFunctionBody = useCallback(
     (fnData: FunctionData, funcId: string, level = 0, omitFirstLine = false) => {
