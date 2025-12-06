@@ -80,7 +80,6 @@ export default function App() {
         expanded={expanded}
         toggle={toggle}
         onFunctionClick={handleFunctionClick}
-        fetchLineEvent={fetchLineEvent} // pass the new line-level fetch
       />
     </div>
   );
