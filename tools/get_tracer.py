@@ -1,9 +1,11 @@
+import argparse
 import sys
 import os
 import json
 import importlib.util
 import types
 import traceback
+import bdb
 
 def import_module_from_path(repo_root: str, rel_path: str):
     rel_path = rel_path.lstrip("/")
@@ -33,62 +35,52 @@ def safe_json(value):
     except Exception:
         return f"<unserializable {type(value).__name__}>"
 
-def tracer_factory(repo_root: str):
-    repo_root = os.path.abspath(repo_root)
+# --------------------------
+# Procedural tracer using bdb
+# --------------------------
+def run_with_stop_line(fn, args, kwargs, stop_line, filename):
+    events = []
+    debugger = bdb.Bdb()
 
-    def tracer(frame, event, arg):
-        filename = os.path.abspath(frame.f_code.co_filename)
-        if not filename.startswith(repo_root):
-            return None
-
-        func = frame.f_code.co_name
+    def trace(frame):
         lineno = frame.f_lineno
+        fname = os.path.abspath(frame.f_code.co_filename)
+        func = frame.f_code.co_name
         locals_snapshot = {k: safe_json(v) for k, v in frame.f_locals.items()}
 
-        if event == "line":
-            event_obj = {
-                "event": "line",
-                "filename": filename,
-                "function": func,
-                "line": lineno,
-                "locals": locals_snapshot
-            }
-        elif event == "return":
-            event_obj = {
-                "event": "return",
-                "filename": filename,
-                "function": func,
-                "value": safe_json(arg)
-            }
-        elif event == "exception":
-            event_obj = {
-                "event": "exception",
-                "filename": filename,
-                "function": func,
-                "exception": str(arg)
-            }
-        else:
-            return tracer
+        events.append({
+            "event": "line",
+            "filename": fname,
+            "function": func,
+            "line": lineno,
+            "locals": locals_snapshot
+        })
 
-        # Print **one event per step**
-        print(json.dumps(event_obj), flush=True)
+        if lineno >= stop_line and fname == filename:
+            print(f"Stopping at {lineno} in {filename}")
+            debugger.set_quit()  # halts execution
 
-        # Wait for next signal from Rust/frontend
-        input()
-        return tracer
-
-    return tracer
+    debugger.user_line = trace
+    debugger.runctx(
+        "res = fn(*args, **kwargs)",
+        globals={"fn": fn, "args": args, "kwargs": kwargs},
+        locals={}
+    )
+    return events
 
 def main():
-    if len(sys.argv) < 4:
-        print(json.dumps({"error": "Usage: get_tracer_step.py <repo_root> <entry_full_id> <args_json>"}))
-        sys.exit(1)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--repo_root", required=False, default="/home/bimal/Documents/ucsd/research/code/trap")
+    parser.add_argument("--entry_full_id", required=False, default="backend/services/analytics.py::get_metric_period_analytics")
+    parser.add_argument("--args_json", required=False, default='{"kwargs": {"metric_name": "test", "period": "last_7_days"}}')
+    parser.add_argument("--stop_line", required=False, type=int, default=103)
 
-    repo_root = sys.argv[1]
-    entry_full_id = sys.argv[2]
-    args_json = sys.argv[3]
+    args = parser.parse_args()
 
-    events = []
+    repo_root = args.repo_root
+    entry_full_id = args.entry_full_id
+    args_json = args.args_json
+    stop_line = args.stop_line
 
     if "::" not in entry_full_id:
         print(json.dumps({"error": "invalid entry id"}))
@@ -112,24 +104,22 @@ def main():
 
     fn = getattr(mod, fn_name)
 
-    args = []
-    kwargs = {}
+    args_list = []
+    kwargs_dict = {}
     if args_json:
         try:
             parsed = json.loads(args_json)
-            args = parsed.get("args", [])
-            kwargs = parsed.get("kwargs", {})
+            args_list = parsed.get("args", [])
+            kwargs_dict = parsed.get("kwargs", {})
         except Exception:
             pass
 
-    sys.settrace(tracer_factory(repo_root))
     try:
-        res = fn(*args, **kwargs)
-        print(json.dumps({"event": "done", "result": safe_json(res)}), flush=True)
+        events = run_with_stop_line(fn, args_list, kwargs_dict, stop_line, abs_path)
+        events = events[1:]
+        print(json.dumps({"events": events}, indent=2))
     except Exception as e:
         print(json.dumps({"event": "error", "error": str(e), "traceback": traceback.format_exc()}), flush=True)
-    finally:
-        sys.settrace(None)
 
 if __name__ == "__main__":
     main()
