@@ -65,7 +65,7 @@ class PersistentDebugger(bdb.Bdb):
             "event": "line",
             "filename": fname,
             "function": funcname,
-            "line": lineno,
+            "line": lineno - 1,
             "locals": locals_snapshot
         }
 
@@ -168,7 +168,7 @@ def main():
     dbg.run_function_once(fn, args_list, kwargs_dict)
 
     # Run until initial stop_line
-    dbg.continue_until(stop_line)
+    dbg.continue_until(stop_line + 1)
     dbg.wait_event.wait()
     # print(json.dumps(dbg.last_event, indent=2), flush=True)
 
@@ -179,7 +179,7 @@ def main():
             if not user_input or user_input == "0":
                 break
             line = int(user_input)
-            dbg.continue_until(line)
+            dbg.continue_until(line + 1)
             dbg.wait_event.wait()
             # print(json.dumps(dbg.last_event, indent=2))
             print(json.dumps(dbg.last_event, separators=(",", ":")), flush=True)
