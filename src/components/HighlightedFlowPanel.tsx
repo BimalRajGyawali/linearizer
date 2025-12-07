@@ -1,7 +1,9 @@
+// --- imports ---
 import React, { useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { prism as lightTheme } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { invoke } from "@tauri-apps/api/core";
 
 interface TraceEvent {
   event: string;
@@ -25,11 +27,12 @@ interface FlowPanelProps {
   expanded: Record<string, boolean>;
   toggle: (id: string) => void;
   onFunctionClick?: (fullId: string) => void;
-  traceEvents?: TraceEvent[];
 }
 
+// -------------------------------------------
+// syntax highlighting memoization
+// -------------------------------------------
 
-// Memoized line to prevent flash
 const MemoizedLine: React.FC<{ code: string }> = React.memo(
   ({ code }) => (
     <SyntaxHighlighter
@@ -55,34 +58,13 @@ const MemoizedLine: React.FC<{ code: string }> = React.memo(
   (prev, next) => prev.code === next.code
 );
 
-const renderEvents = (events: TraceEvent[]) => {
-  console.log(JSON.stringify(events, null, 2));
-  if (!events || events.length === 0) return null;
-  return (
-    <div
-      style={{
-        marginLeft: 12,
-        fontSize: 11,
-        fontFamily: "monospace",
-        color: "#374151",
-        backgroundColor: "#f3f4f6",
-        padding: "6px",
-        borderRadius: 4,
-        border: "1px solid #d1d5db",
-        maxWidth: "500px",
-        overflowX: "auto",
-        whiteSpace: "pre",
-      }}
-      onClick={(e) => e.stopPropagation()}
-    >
-      {events.map((ev, i) => (
-        <div key={i} style={{ borderBottom: i < events.length - 1 ? "1px dashed #d1d5db" : "none", paddingBottom: 4, marginBottom: 4 }}>
-          {JSON.stringify(ev, null, 2)}
-        </div>
-      ))}
-    </div>
-  );
-};
+function stripQualifiedCalls(line: string): string {
+  return line.replace(/[A-Za-z0-9_\/\.\-]+\.py::([A-Za-z_]\w*)\s*\(/g, (_, fn) => fn + "(");
+}
+
+// -------------------------------------------
+// main component
+// -------------------------------------------
 
 const FlowPanel: React.FC<FlowPanelProps> = ({
   parents,
@@ -90,32 +72,95 @@ const FlowPanel: React.FC<FlowPanelProps> = ({
   expanded,
   toggle,
   onFunctionClick,
-  traceEvents = [],
 }) => {
-  // const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const [activeId, setActiveId] = useState<string | null>(null); // Track last clicked function
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
 
-  // const toggle = useCallback((id: string) => {
-  //   setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
-  // }, []);
+  // -------------------------------------------
+  // unified click handler for ALL line types
+  // -------------------------------------------
+    //
+  const getEntryFullId = (prefixId: string) => {
+    return prefixId.split("-")[0];
+};
 
-  const handleClick = useCallback((id: string) => {
-    toggle(id);
-    setActiveId(id); // mark as active for dashed border
-  }, [toggle]);
+  const handleLineClick = useCallback(
+    async ({
+      id,
+      filename,
+      line,
+      fnName,
+    }: {
+      id: string;
+      filename: string;
+      line: number;
+      fnName?: string; // only present for function-call lines
+    }) => {
+      toggle(id);
+      setActiveId(id);
 
-  const getDisplayFnName = (fullId: string) => {
-    let dispName = fullId.split("::").pop() || fullId;
-    return dispName;
-  }
+      if (fnName) onFunctionClick?.(fnName);
 
-  function stripQualifiedCalls(line: string): string {
-    // Find patterns like   something.py::funcName(
-    return line.replace(
-      /[A-Za-z0-9_\/\.\-]+\.py::([A-Za-z_]\w*)\s*\(/g,
-      (_, fn) => fn + "("
+      try {
+        const traceReq = {
+          entry_full_id: getEntryFullId(id),
+          stop_line: line,
+          args_json: JSON.stringify({
+            args: [],
+            kwargs: { metric_name: "test", period: "last_7_days" },
+          }),
+          filename,
+        };
+        console.log(`Trace request ${JSON.stringify(traceReq)}, fn: ${fnName}`)
+        const event = await invoke<TraceEvent>("get_tracer_data", { req: traceReq });
+        setTraceEvents((prev) => [...prev, event]);
+      } catch (err) {
+        console.error("Error calling tracer:", err);
+      }
+    },
+    [toggle, onFunctionClick]
+  );
+
+  const getDisplayFnName = (fullId: string) => fullId.split("::").pop() || fullId;
+
+  const renderEvents = (events: TraceEvent[]) => {
+    if (!events?.length) return null;
+    return (
+      <div
+        style={{
+          marginLeft: 12,
+          fontSize: 11,
+          fontFamily: "monospace",
+          color: "#374151",
+          backgroundColor: "#f3f4f6",
+          padding: "6px",
+          borderRadius: 4,
+          border: "1px solid #d1d5db",
+          maxWidth: "500px",
+          overflowX: "auto",
+          whiteSpace: "pre",
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {events.map((ev, i) => (
+          <div
+            key={i}
+            style={{
+              borderBottom: i < events.length - 1 ? "1px dashed #d1d5db" : "none",
+              paddingBottom: 4,
+              marginBottom: 4,
+            }}
+          >
+            {JSON.stringify(ev, null, 2)}
+          </div>
+        ))}
+      </div>
     );
-  }
+  };
+
+  // -------------------------------------------
+  // RECURSIVE BODY RENDERER
+  // -------------------------------------------
 
   const renderFunctionBody = useCallback(
     (fnData: FunctionData, prefixId: string, level = 0, omitFirstLine = false) => {
@@ -129,38 +174,23 @@ const FlowPanel: React.FC<FlowPanelProps> = ({
           {visible.map((line, idx) => {
             const lineId = `${prefixId}-${idx}`;
             const currentLineNo = start_line + idx + offset;
-            console.log(lineId, currentLineNo, file_path);
-            // Find trace events for this line
-            const events = traceEvents.filter(
+
+            const events = traceEvents?.filter(
               (e) =>
                 e.line === currentLineNo &&
-                // Normalize paths for comparison if needed, or assume exact match
-                (e.filename === file_path || file_path.endsWith(e.filename) || e.filename.endsWith(file_path))
+                (e.filename === file_path ||
+                  file_path.endsWith(e.filename) ||
+                  e.filename.endsWith(file_path))
             );
 
-            // Debug matching
-            if (traceEvents.length > 0) {
-              const potential = traceEvents.filter(e => e.line === currentLineNo);
-              if (potential.length > 0) {
-                console.log(`Line ${currentLineNo} (type: ${typeof currentLineNo}): Found ${potential.length} events. Match results:`,
-                  potential.map(e => ({
-                    filename: e.filename,
-                    file_path,
-                    match: (e.filename === file_path || file_path.endsWith(e.filename) || e.filename.endsWith(file_path))
-                  }))
-                );
-              }
-            }
-
-            let rendered = false;
-
+            // ==========================================
+            // FUNCTION CALL LINE
+            // ==========================================
             for (const fnName of Object.keys(functions)) {
-              const displayFnName = getDisplayFnName(fnName);
               if (!line) continue;
               if (line.includes(fnName) && !line.trim().startsWith("def ")) {
                 const id = `${lineId}-${fnName}`;
                 const isExpanded = !!expanded[id];
-                rendered = true;
 
                 return (
                   <div
@@ -173,27 +203,40 @@ const FlowPanel: React.FC<FlowPanelProps> = ({
                       borderRadius: 2,
                     }}
                   >
-                    <div style={{ display: "flex", flexDirection: "row", alignItems: "flex-start" }}>
-                      <span style={{
-                        marginRight: 12,
-                        color: "#9ca3af",
-                        minWidth: 32,
-                        textAlign: "right",
-                        userSelect: "none",
-                        fontSize: 12,
-                        fontFamily: "monospace",
-                        paddingTop: 4
-                      }}>
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "row",
+                        alignItems: "flex-start",
+                      }}
+                    >
+                      <span
+                        style={{
+                          marginRight: 12,
+                          color: "#9ca3af",
+                          minWidth: 32,
+                          textAlign: "right",
+                          userSelect: "none",
+                          fontSize: 12,
+                          fontFamily: "monospace",
+                          paddingTop: 4,
+                        }}
+                      >
                         {currentLineNo}
                       </span>
+
+                      {/* clickable call line */}
                       <div style={{ flex: 1 }}>
                         <button
                           type="button"
                           onClick={(e) => {
-                            e.preventDefault();
                             e.stopPropagation();
-                            handleClick(id);
-                            onFunctionClick?.(fnName);
+                            handleLineClick({
+                              id,
+                              filename: file_path,
+                              line: currentLineNo,
+                              fnName,
+                            });
                           }}
                           style={{
                             cursor: "pointer",
@@ -203,14 +246,17 @@ const FlowPanel: React.FC<FlowPanelProps> = ({
                             fontFamily: "Fira Code, monospace",
                             fontSize: 14,
                             lineHeight: "1.45",
-                            background: isExpanded ? "rgba(59,130,246,0.1)" : "transparent",
+                            background: isExpanded
+                              ? "rgba(59,130,246,0.1)"
+                              : "transparent",
                             border: "none",
-                            textAlign: "left"
+                            textAlign: "left",
                           }}
                         >
-                          <MemoizedLine code={line.replace(fnName, displayFnName)} />
+                          <MemoizedLine code={line.replace(fnName, getDisplayFnName(fnName))} />
                         </button>
                       </div>
+
                       {renderEvents(events)}
                     </div>
 
@@ -225,17 +271,12 @@ const FlowPanel: React.FC<FlowPanelProps> = ({
                           <div
                             style={{
                               padding: 8,
-                              borderRadius: 6, borderLeft: "1px solid #3b82f6",
-
-                              border: activeId === id ? "1px dashed #3b82f6" : "none", // dashed only for last clicked
+                              borderRadius: 6,
+                              borderLeft: "1px solid #3b82f6",
+                              border: activeId === id ? "1px dashed #3b82f6" : "none",
                             }}
                           >
-                            {renderFunctionBody(
-                              functions[fnName],
-                              id,
-                              level + 1,
-                              true
-                            )}
+                            {renderFunctionBody(functions[fnName], id, level + 1, true)}
                           </div>
                         </motion.div>
                       )}
@@ -245,19 +286,43 @@ const FlowPanel: React.FC<FlowPanelProps> = ({
               }
             }
 
-            if (!rendered) {
-              return (
+            // ==========================================
+            // NORMAL LINE — ALSO CALLS TRACER
+            // ==========================================
+
+            return (
+              <div
+                key={lineId}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleLineClick({
+                    id: lineId,
+                    filename: file_path,
+                    line: currentLineNo,
+                  });
+                }}
+                style={{
+                  marginBottom: 2,
+                  marginLeft: level * 16,
+                  display: "flex",
+                  flexDirection: "row",
+                  alignItems: "flex-start",
+                  cursor: "pointer",
+                  borderLeft: "2px solid transparent",
+                  paddingLeft: 6,
+                  transition: "all 0.12s ease",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = "#f0f9ff";
+                  e.currentTarget.style.borderLeft = "2px solid #93c5fd";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = "transparent";
+                  e.currentTarget.style.borderLeft = "2px solid transparent";
+                }}
+              >
                 <div
-                  key={lineId}
                   style={{
-                    marginBottom: 2,
-                    marginLeft: level * 16,
-                    display: "flex",
-                    flexDirection: "row",
-                    alignItems: "flex-start",
-                  }}
-                >
-                  <div style={{
                     marginRight: 12,
                     color: "#9ca3af",
                     minWidth: 32,
@@ -265,25 +330,29 @@ const FlowPanel: React.FC<FlowPanelProps> = ({
                     userSelect: "none",
                     fontSize: 12,
                     fontFamily: "monospace",
-                    paddingTop: 2 // Align with code
-                  }}>
-                    {currentLineNo}
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <MemoizedLine code={stripQualifiedCalls(line)} />
-                  </div>
-                  {renderEvents(events)}
+                    paddingTop: 2,
+                  }}
+                >
+                  {currentLineNo}
                 </div>
-              );
-            }
 
-            return null;
+                <div style={{ flex: 1 }}>
+                  <MemoizedLine code={stripQualifiedCalls(line)} />
+                </div>
+
+                {renderEvents(events)}
+              </div>
+            );
           })}
         </div>
       );
     },
-    [expanded, functions, handleClick, activeId, traceEvents]
+    [expanded, functions, handleLineClick, activeId, traceEvents]
   );
+
+  // -------------------------------------------
+  // panel root
+  // -------------------------------------------
 
   return (
     <div
@@ -307,9 +376,8 @@ const FlowPanel: React.FC<FlowPanelProps> = ({
             <button
               type="button"
               onClick={(e) => {
-                e.preventDefault();
                 e.stopPropagation();
-                handleClick(parent);
+                toggle(parent);
                 onFunctionClick?.(parent);
               }}
               style={{
@@ -323,7 +391,7 @@ const FlowPanel: React.FC<FlowPanelProps> = ({
                 border: "1px solid #d1d5db",
               }}
             >
-              {parent.split("::").pop() || parent}
+              {getDisplayFnName(parent)}
             </button>
 
             <AnimatePresence initial={false}>
@@ -343,10 +411,10 @@ const FlowPanel: React.FC<FlowPanelProps> = ({
                       lineHeight: "1.45",
                       color: "#111827",
                       boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
-                      borderLeft: "1px solid #3b82f6", // solid left border for parent
+                      borderLeft: "1px solid #3b82f6",
                     }}
                   >
-                    {renderFunctionBody(functions[parent], parent)}
+                    {renderFunctionBody(fnData, parent)}
                   </div>
                 </motion.div>
               )}

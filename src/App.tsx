@@ -44,29 +44,9 @@ export default function App() {
     }
   };
 
-  const fetchTrace = async () => {
-    try {
-      const result: any = await invoke("get_tracer_data", {
-        req: {
-          entry_full_id: "/backend/services/analytics.py::get_metric_time_based_stats",
-          args_json: JSON.stringify({
-            args: [],
-            kwargs: { metric_name: "test", window_size: "daily" },
-          }),
-        },
-      });
-      console.log("Trace result:", result);
-      if (result && result.events) {
-        setTraceEvents(result.events);
-      }
-    } catch (e) {
-      console.error("Error fetching trace:", e);
-    }
-  };
 
   useEffect(() => {
     fetchFlows();
-    fetchTrace();
   }, []);
 
   // Sidebar collapse/expand
@@ -215,7 +195,6 @@ export default function App() {
         expanded={expanded}
         toggle={toggle}
         onFunctionClick={handleFunctionClick} // pass handler to FlowPanel
-        traceEvents={traceEvents}
       />
     </div>
   );

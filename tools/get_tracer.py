@@ -1,190 +1,191 @@
+import argparse
 import sys
-import time
-import types
+import os
+import json
 import importlib.util
+import types
 import traceback
-from typing import Dict, List, Optional, Tuple, Set
+import threading
+import bdb
 
-
+# --------------------------
+# Helpers
+# --------------------------
 def import_module_from_path(repo_root: str, rel_path: str):
-    """
-    Import a Python file from repo_root/rel_path while supporting relative imports.
-    rel_path: like "backend/services/analytics.py"
-    """
-    import os
-    import importlib.util
-    import sys
-
-    # Normalize
     rel_path = rel_path.lstrip("/")
     abs_path = os.path.join(repo_root, rel_path)
-
-    # Convert to module name: backend/services/analytics.py → backend.services.analytics
     mod_name = rel_path[:-3].replace("/", ".")
-
-    # Ensure repo root is on sys.path
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
-
-    # Create spec
     spec = importlib.util.spec_from_file_location(mod_name, abs_path)
     module = importlib.util.module_from_spec(spec)
-
-    # Ensure package parent exists so relative imports work
     pkg_name = ".".join(mod_name.split(".")[:-1])
     if pkg_name:
         module.__package__ = pkg_name
-
-    # Execute
     spec.loader.exec_module(module)  # type: ignore
-
     return module
 
-
 def safe_json(value):
-    """
-    Safely convert a value to a JSON-serializable representation.
-    Avoids crashing on FrameSummary, modules, functions, etc.
-    """
-    import types
     try:
-        # basic types are safe
         if isinstance(value, (str, int, float, bool, type(None))):
             return value
-        # lists/tuples/sets
         if isinstance(value, (list, tuple, set)):
             return [safe_json(v) for v in value]
-        # dicts
         if isinstance(value, dict):
             return {str(k): safe_json(v) for k, v in value.items()}
-        # functions, modules, classes, frames, traceback, etc
         if isinstance(value, (types.FunctionType, types.ModuleType, type, types.FrameType, types.TracebackType)):
             return f"<{type(value).__name__}>"
-        # fallback to string
         return str(value)
     except Exception:
         return f"<unserializable {type(value).__name__}>"
 
+# --------------------------
+# Persistent Debugger
+# --------------------------
+class PersistentDebugger(bdb.Bdb):
+    def __init__(self):
+        super().__init__()
+        self.wait_event = threading.Event()
+        self.target_line = None
+        self.last_event = None
+        self.running_thread = None
 
-def tracer_factory(events_list: list, repo_root: str):
-    repo_root = os.path.abspath(repo_root)  # normalize
-
-    def tracer(frame, event, arg):
-        filename = os.path.abspath(frame.f_code.co_filename)
-
-        # Only trace files inside repo_root
-        if not filename.startswith(repo_root):
-            return None  # don't trace this frame
-
-        func = frame.f_code.co_name
+    def user_line(self, frame):
         lineno = frame.f_lineno
+        fname = os.path.abspath(frame.f_code.co_filename)
+        # print(f"User line {lineno}: {fname}")
+        # Only stop for the main target file
+        if fname != self.target_file:
+            return
+
+        funcname = frame.f_code.co_name
         locals_snapshot = {k: safe_json(v) for k, v in frame.f_locals.items()}
 
-        if event == "line":
-            events_list.append({
-                "event": "line",
-                "filename": filename,
-                "function": func,
-                "line": lineno,
-                "locals": locals_snapshot
-            })
-        elif event == "return":
-            events_list.append({
-                "event": "return",
-                "filename": filename,
-                "function": func,
-                "value": safe_json(arg)
-            })
+        self.last_event = {
+            "event": "line",
+            "filename": fname,
+            "function": funcname,
+            "line": lineno,
+            "locals": locals_snapshot
+        }
 
-        return tracer
+        # Stop if we've reached the target line
+        if self.target_line is not None and lineno >= self.target_line:
+            self.set_step()
+            self.wait_event.clear()
+            self.wait_event.wait()
 
-    return tracer
+    def continue_until(self, line):
+        self.target_line = line
+        self.wait_event.set()
 
+    def run_function_once(self, fn, args=None, kwargs=None):
+        args = args or []
+        kwargs = kwargs or {}
+        self.running_thread = threading.Thread(
+            target=lambda: self.runctx(
+                "fn(*args, **kwargs)",
+                globals={"fn": fn, "args": args, "kwargs": kwargs},
+                locals={}
+            )
+        )
+        self.running_thread.start()
 
-def run_trace(repo_root: str, entry_full_id: str, args_json: Optional[str]):
-    """
-    Collect all trace events and return them as a list.
-    """
-    import os
-    import json
+# --------------------------
+# Main CLI
+# --------------------------
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--repo_root",
+        required=False,
+        default="/home/bimal/Documents/ucsd/research/code/trap"
+    )
+    parser.add_argument(
+        "--entry_full_id",
+        required=False,
+        default="backend/services/analytics.py::get_metric_period_analytics"
+    )
+    parser.add_argument(
+        "--args_json",
+        required=False,
+        default='{"kwargs": {"metric_name": "test", "period": "last_7_days"}}'
+    )
+    parser.add_argument(
+        "--stop_line",
+        required=False,
+        type=int,
+        default=100
+    )
+    args = parser.parse_args()
 
-    events = []
+    repo_root = args.repo_root
+    entry_full_id = args.entry_full_id
+    args_json = args.args_json
+    stop_line = args.stop_line
 
-    # parse path and function
-    if "::" not in entry_full_id:
-        return {"error": "invalid entry id", "events": events}
-
-    rel_path, fn_name = entry_full_id.split("::", 1)
-    rel_path_no = rel_path.lstrip("/")
-    abs_path = os.path.join(repo_root, rel_path_no)
-    if not os.path.isfile(abs_path):
-        return {"error": "file not found", "file": abs_path, "events": events}
-
-    # load module
-    try:
-        mod = import_module_from_path(repo_root, rel_path_no)
-    except Exception as e:
-        traceback_str = traceback.format_exc()
-        return {"error": "module import failed", "exception": str(e), "traceback": traceback_str, "events": events}
-
-    if not hasattr(mod, fn_name):
-        return {"error": "function not found", "function": fn_name, "events": events}
-
-    fn = getattr(mod, fn_name)
-
-    # parse args
-    args = []
-    kwargs = {}
+    args_list = []
+    kwargs_dict = {}
     if args_json:
         try:
             parsed = json.loads(args_json)
-            args = parsed.get("args", [])
-            kwargs = parsed.get("kwargs", {})
+            args_list = parsed.get("args", [])
+            kwargs_dict = parsed.get("kwargs", {})
         except Exception:
             pass
 
-    # tracer will append events to events list
-    tracer = tracer_factory(events, repo_root)
-    sys.settrace(tracer)
+    if "::" not in entry_full_id:
+        # print(json.dumps({"error": "invalid entry id"}))
+        sys.exit(1)
+
+    rel_path, fn_name = entry_full_id.split("::", 1)
+    abs_path = os.path.join(repo_root, rel_path.lstrip("/"))
+
+    if not os.path.isfile(abs_path):
+        print(json.dumps({"error": "file not found", "file": abs_path}))
+        sys.exit(1)
+
     try:
-        res = fn(*args, **kwargs)
-        events.append({"event": "done", "result": safe_json(res)})
+        mod = import_module_from_path(repo_root, rel_path)
     except Exception as e:
-        traceback_str = traceback.format_exc()
-        events.append({"event": "error", "error": str(e), "traceback": traceback_str})
-    finally:
-        sys.settrace(None)
+        print(json.dumps({
+            "error": "module import failed",
+            "exception": str(e),
+            "traceback": traceback.format_exc()
+        }))
+        sys.exit(1)
 
-    return {"events": events}
+    if not hasattr(mod, fn_name):
+        print(json.dumps({"error": "function not found", "function": fn_name}))
+        sys.exit(1)
 
+    fn = getattr(mod, fn_name)
 
+    dbg = PersistentDebugger()
+    dbg.target_file = abs_path  # Only this file counts for stop_line
+    dbg.repo_root = repo_root
+
+    dbg.run_function_once(fn, args_list, kwargs_dict)
+
+    # Run until initial stop_line
+    dbg.continue_until(stop_line)
+    dbg.wait_event.wait()
+    # print(json.dumps(dbg.last_event, indent=2), flush=True)
+
+    # Interactive stepping
+    while True:
+        try:
+            user_input = input().strip()
+            if not user_input or user_input == "0":
+                break
+            line = int(user_input)
+            dbg.continue_until(line)
+            dbg.wait_event.wait()
+            # print(json.dumps(dbg.last_event, indent=2))
+            print(json.dumps(dbg.last_event, separators=(",", ":")), flush=True)
+
+        except Exception as e:
+            print("Error:", e)
 
 if __name__ == "__main__":
-    import os
-    import json
-    import argparse
-    parser = argparse.ArgumentParser(description="Get tracer for user code execution")
-    parser.add_argument("--repo-root", type=str, required=False,
-                        default="/home/bimal/Documents/ucsd/research/code/trap",
-                        help="Path to the repository root")
-
-    parser.add_argument("--entry-full-id", type=str, required=False,
-                        default="/backend/services/analytics.py::get_metric_time_based_stats",
-                        help="Entry full id in format /rel/path.py::func")
-
-    parser.add_argument(
-        "--args-json",
-        type=str,
-        required=False,
-        default='{"args": [], "kwargs": {"metric_name": "test", "window_size": "daily"}}',
-        help="JSON string for function arguments"
-    )
-
-    args = parser.parse_args()
-
-    # Run trace and collect all events
-    result = run_trace(args.repo_root, args.entry_full_id, args.args_json)
-
-    # Print a single JSON object containing all events
-    print(json.dumps(result, indent=2))
-    sys.exit(0)
+    main()
