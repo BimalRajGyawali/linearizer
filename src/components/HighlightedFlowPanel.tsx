@@ -104,7 +104,7 @@ const FlowPanel: React.FC<FlowPanelProps> = ({
       try {
         const traceReq = {
           entry_full_id: getEntryFullId(id),
-          stop_line: line,
+          stop_line: line + 1,
           args_json: JSON.stringify({
             args: [],
             kwargs: { metric_name: "test", period: "last_7_days" },
@@ -113,6 +113,7 @@ const FlowPanel: React.FC<FlowPanelProps> = ({
         };
         console.log(`Trace request ${JSON.stringify(traceReq)}, fn: ${fnName}`)
         const event = await invoke<TraceEvent>("get_tracer_data", { req: traceReq });
+        event.line = event.line - 1;
         setTraceEvents((prev) => [...prev, event]);
       } catch (err) {
         console.error("Error calling tracer:", err);
