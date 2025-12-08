@@ -45,10 +45,12 @@ def safe_json(value):
 class PersistentDebugger(bdb.Bdb):
     def __init__(self):
         super().__init__()
-        self.wait_event = threading.Event()
+        self.step_event = threading.Event()  # allows debugger thread to proceed
+        self.ready_event = threading.Event()  # signals main that last_event is ready
         self.target_line = None
         self.last_event = None
         self.running_thread = None
+        self.target_file = None
 
     def user_line(self, frame):
         lineno = frame.f_lineno
@@ -72,12 +74,19 @@ class PersistentDebugger(bdb.Bdb):
         # Stop if we've reached the target line
         if self.target_line is not None and lineno >= self.target_line:
             self.set_step()
-            self.wait_event.clear()
-            self.wait_event.wait()
+            # Notify main thread that we have a fresh event ready
+            self.ready_event.set()
+            # Wait until the main thread asks us to continue
+            self.step_event.clear()
+            self.step_event.wait()
 
     def continue_until(self, line):
         self.target_line = line
-        self.wait_event.set()
+        self.ready_event.clear()
+        self.step_event.set()
+
+    def wait_for_event(self, timeout=None):
+        return self.ready_event.wait(timeout=timeout)
 
     def run_function_once(self, fn, args=None, kwargs=None):
         args = args or []
@@ -90,6 +99,8 @@ class PersistentDebugger(bdb.Bdb):
             )
         )
         self.running_thread.start()
+        # let the debugger start paused until the first continue_until
+        self.step_event.clear()
 
 # --------------------------
 # Main CLI
@@ -169,8 +180,8 @@ def main():
 
     # Run until initial stop_line
     dbg.continue_until(stop_line)
-    dbg.wait_event.wait()
-    # print(json.dumps(dbg.last_event, indent=2), flush=True)
+    dbg.wait_for_event()
+    print(json.dumps(dbg.last_event, separators=(",", ":")), flush=True)
 
     # Interactive stepping
     while True:
@@ -180,8 +191,7 @@ def main():
                 break
             line = int(user_input)
             dbg.continue_until(line)
-            dbg.wait_event.wait()
-            # print(json.dumps(dbg.last_event, indent=2))
+            dbg.wait_for_event()
             print(json.dumps(dbg.last_event, separators=(",", ":")), flush=True)
 
         except Exception as e:
