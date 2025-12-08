@@ -92,12 +92,18 @@ struct Tracer {
 }
 
 impl Tracer {
-    fn spawn() -> Result<Self, String> {
+    fn spawn(req: &TraceRequest) -> Result<Self, String> {
         let python = std::env::var("PYTHON_BIN").unwrap_or("python3".to_string());
         let script_path = "../tools/get_tracer.py";
 
         let mut child = Command::new(&python)
             .arg(script_path)
+            .arg("--entry_full_id")
+            .arg(&req.entry_full_id)
+            .arg("--args_json")
+            .arg(&req.args_json)
+            .arg("--stop_line")
+            .arg(req.stop_line.to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -111,7 +117,8 @@ impl Tracer {
             child,
             stdin,
             stdout: BufReader::new(stdout),
-            current_flow: None,
+            // set current_flow to entry_full_id
+            current_flow: Some(req.entry_full_id.clone()),
         })
     }
 }
@@ -151,12 +158,14 @@ fn get_tracer_data(
     let mut tracer_guard = tracer_state.lock().unwrap();
     println!("[Rust] tracer alive = {}", tracer_guard.is_some());
 
+    let first_time = tracer_guard.is_none();
 
     // Spawn tracer if not alive
-    if tracer_guard.is_none() {
+    if first_time {
         println!("[Rust] Spawning tracer…");
-        *tracer_guard = Some(Tracer::spawn()?);
+        *tracer_guard = Some(Tracer::spawn(&req)?);
     }
+
     let tracer = tracer_guard.as_mut().unwrap();
     println!("[Rust] Current flow = {:?}", tracer.current_flow);
 
@@ -164,23 +173,21 @@ fn get_tracer_data(
     // If new flow, tell Python to reset and start new flow
     if tracer.current_flow.as_deref() != Some(&req.entry_full_id) {
         println!("[Rust] New flow detected, sending start_flow");
-
-//         writeln!(
-//             tracer.stdin,
-//             "start_flow {} {}",
-//             req.entry_full_id,
-//             req.args_json.replace("\n", "\\n")
-//         ).map_err(|e| format!("Failed to write start_flow to Python stdin: {}", e))?;
-//         tracer.stdin.flush().map_err(|e| format!("Failed to flush stdin: {}", e))?;
-//         tracer.current_flow = Some(req.entry_full_id.clone());
     }
 
     // Send continue command
-    println!("[Rust] Sending continue_to {}", req.stop_line);
+    if !first_time {
+        println!("[Rust] Sending continue_to {}", req.stop_line);
 
-    writeln!(tracer.stdin, "{}", req.stop_line)
+        writeln!(tracer.stdin, "{}", req.stop_line)
         .map_err(|e| format!("Failed to write continue_to to Python stdin: {}", e))?;
-    tracer.stdin.flush().map_err(|e| format!("Failed to flush stdin: {}", e))?;
+
+        tracer.stdin.flush().map_err(|e| format!("Failed to flush stdin: {}", e))?;
+
+      } else {
+        println!("[Rust] First time — not sending continue_to");
+    }
+
 
     // Read Python stdout for the JSON event
     let mut line = String::new();
