@@ -194,7 +194,7 @@ fn get_tracer_data(
 
     // Read Python stdout for the JSON event
     let mut line = String::new();
-    tracer.stdout.read_line(&mut line)
+    tracer.stderr.read_line(&mut line)
         .map_err(|e| format!("Failed to read Python stdout: {}", e))?;
 
 //     let json_str = &line["TRACER:".len()..];

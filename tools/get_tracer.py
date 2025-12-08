@@ -11,6 +11,12 @@ import bdb
 # --------------------------
 # Helpers
 # --------------------------
+
+def send_event(event_json):
+    sys.stderr.write(json.dumps(event_json, separators=(",", ":")) + "\n")
+    sys.stderr.flush()
+
+
 def import_module_from_path(repo_root: str, rel_path: str):
     rel_path = rel_path.lstrip("/")
     abs_path = os.path.join(repo_root, rel_path)
@@ -183,7 +189,8 @@ def main():
     # Run until initial stop_line
     dbg.continue_until(stop_line)
     dbg.wait_for_event()
-    print(json.dumps(dbg.last_event, separators=(",", ":")), flush=True)
+
+    send_event(dbg.last_event)
 
     # Interactive stepping
     while True:
@@ -197,7 +204,8 @@ def main():
             line = int(user_input)
             dbg.continue_until(line)
             dbg.wait_for_event()
-            print(json.dumps(dbg.last_event, separators=(",", ":")), flush=True)
+            # print(json.dumps(dbg.last_event, separators=(",", ":")), flush=True)
+            send_event(dbg.last_event)
 
         except Exception as e:
             print("Error:", e)
