@@ -2,7 +2,7 @@
 use serde_json::{json, Value};
 use serde::Deserialize;
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, ChildStderr, Command, Stdio};
 use tauri::State;
 use std::sync::Mutex;
 
@@ -88,6 +88,7 @@ struct Tracer {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
+    stderr: BufReader<std::process::ChildStderr>,
     current_flow: Option<String>,
 }
 
@@ -112,11 +113,13 @@ impl Tracer {
 
         let stdin = child.stdin.take().ok_or("Failed to open Python stdin")?;
         let stdout = child.stdout.take().ok_or("Failed to capture Python stdout")?;
+        let stderr = child.stderr.take().ok_or("Failed to capture Python stderr")?;
 
         Ok(Self {
             child,
             stdin,
             stdout: BufReader::new(stdout),
+            stderr: BufReader::new(stderr),
             // set current_flow to entry_full_id
             current_flow: Some(req.entry_full_id.clone()),
         })
@@ -194,10 +197,7 @@ fn get_tracer_data(
     tracer.stdout.read_line(&mut line)
         .map_err(|e| format!("Failed to read Python stdout: {}", e))?;
 
-    println!("{}", line);
-    if line.trim().is_empty() {
-        return Err("Empty response from Python".to_string());
-    }
+//     let json_str = &line["TRACER:".len()..];
 
     let event_json: Value = serde_json::from_str(&line)
         .map_err(|e| format!("Failed to parse JSON from Python: {} -- line: {}", e, line))?;

@@ -124,9 +124,9 @@ def main():
     )
     parser.add_argument(
         "--stop_line",
-        required=False,
-        type=int,
-        default=100
+        required=True,
+        type=int
+        # default=100
     )
     args = parser.parse_args()
 
@@ -134,7 +134,9 @@ def main():
     entry_full_id = args.entry_full_id
     args_json = args.args_json
     stop_line = args.stop_line
-
+    #
+    with open("debugger_input.log", "a") as f:
+        f.write(f"{stop_line}\n")
     args_list = []
     kwargs_dict = {}
     if args_json:
@@ -187,6 +189,9 @@ def main():
     while True:
         try:
             user_input = input().strip()
+            with open("debugger_input.log", "a") as f:
+                f.write(f"Received input: {user_input}\n")
+
             if not user_input or user_input == "0":
                 break
             line = int(user_input)
