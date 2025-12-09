@@ -193,9 +193,18 @@ fn get_tracer_data(
         println!("[Rust] First time — not sending continue_to");
     }
 
+    // Read from stderr (Python writes events to stderr)
     let mut line = String::new();
+    println!("[Rust] Reading event from Python stderr (stop_line={})...", req.stop_line);
     tracer.stderr.read_line(&mut line)
-        .map_err(|e| format!("Failed to read Python stdout: {}", e))?;
+        .map_err(|e| {
+            // Check if process died
+            if let Ok(Some(status)) = tracer.child.try_wait() {
+                format!("Python process exited with status: {:?} while reading stderr. Error: {}", status, e)
+            } else {
+                format!("Failed to read Python stderr: {} (stop_line={})", e, req.stop_line)
+            }
+        })?;
 
     println!("[Rust] Received from Python: {}", line);
     if line.trim().is_empty() {
