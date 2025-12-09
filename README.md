@@ -22,24 +22,6 @@ Linearizer is built as a **Tauri application** with:
 - **Backend**: Rust (Tauri)
 - **Python Tools**: Scripts for analyzing Git diffs and tracing execution
 
-### Technology Stack
-
-**Frontend:**
-- React 19
-- TypeScript
-- Vite
-- Framer Motion (animations)
-- React Syntax Highlighter
-- Monaco Editor / CodeMirror
-
-**Backend:**
-- Rust (Tauri 2.0)
-- Serde (JSON serialization)
-
-**Python Tools:**
-- AST parsing for function extraction
-- Git diff analysis
-- Python debugger (bdb) for execution tracing
 
 ## Project Structure
 
@@ -107,8 +89,6 @@ linearizer/
 
 ## Usage
 
-### Development Mode
-
 Run the application in development mode:
 
 ```bash
@@ -119,16 +99,6 @@ This will:
 - Start the Vite dev server for the frontend
 - Compile and run the Rust backend
 - Launch the Tauri application window
-
-### Building for Production
-
-Build the application:
-
-```bash
-npm run tauri build
-```
-
-This creates platform-specific installers in `src-tauri/target/release/bundle/`.
 
 ## How It Works
 
@@ -168,26 +138,6 @@ When you click on a line of code:
 - Git status is indicated with colors
 - Clicking a function call highlights the corresponding file in the explorer
 
-## Development
-
-### Frontend Development
-
-The React frontend uses:
-- **Framer Motion** for smooth expand/collapse animations
-- **React Syntax Highlighter** for code highlighting
-- **React Icons** for UI icons
-
-Key components:
-- `App.tsx`: Main layout with resizable sidebar
-- `HighlightedFlowPanel.tsx`: Main code display with syntax highlighting and tracing
-- `FileExplorer.tsx`: File tree with Git status
-
-### Backend Development
-
-The Rust backend exposes Tauri commands:
-- `get_flows()`: Fetches parent functions and function bodies
-- `get_file_tree()`: Returns the repository file tree
-- `get_tracer_data()`: Manages Python debugger for execution tracing
 
 ### Python Tools
 
@@ -224,32 +174,6 @@ Set the `PYTHON_BIN` environment variable to specify which Python to use:
 ```bash
 export PYTHON_BIN=python3
 ```
-
-## Troubleshooting
-
-### Python Script Errors
-
-If Python scripts fail:
-- Ensure Python 3.8+ is installed
-- Check that the repository path is correct
-- Verify Git is available and the repository is valid
-
-### Tauri Build Issues
-
-If Tauri build fails:
-- Ensure Rust is up to date: `rustup update`
-- Check that all system dependencies are installed (see [Tauri prerequisites](https://tauri.app/v1/guides/getting-started/prerequisites))
-
-### Function Not Found
-
-If functions aren't appearing:
-- Ensure there are actual Git changes in the repository
-- Check that changed functions are Python functions (`.py` files)
-- Verify the repository path is correct
-
-
-
-
 
 ---
 
