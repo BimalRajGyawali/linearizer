@@ -67,13 +67,48 @@ class PersistentDebugger(bdb.Bdb):
 
         funcname = frame.f_code.co_name
         locals_snapshot = {k: safe_json(v) for k, v in frame.f_locals.items()}
+        
+        # Capture only user-declared globals from the current file
+        globals_snapshot = {}
+        builtin_names = {'__builtins__', '__file__', '__name__', '__doc__', '__package__', 
+                        '__loader__', '__spec__', '__cached__', '__annotations__'}
+        
+        for k, v in frame.f_globals.items():
+            # Skip built-in names and system variables
+            if k in builtin_names or (k.startswith('__') and k.endswith('__')):
+                continue
+            
+            # Skip imported modules
+            if isinstance(v, types.ModuleType):
+                continue
+            
+            # Skip functions (only want variables)
+            if isinstance(v, types.FunctionType):
+                continue
+            
+            # Skip classes (only want variables)
+            if isinstance(v, type):
+                continue
+            
+            # Skip typing constructs (Dict, List, Optional, etc. from typing module)
+            if hasattr(v, '__module__') and v.__module__ == 'typing':
+                continue
+            
+            # Skip typing._GenericAlias and similar typing constructs
+            if type(v).__module__ == 'typing':
+                continue
+            
+            # Only include simple variable types: int, str, float, bool, None, list, dict, tuple, set
+            # These are the actual variable values the user declared
+            globals_snapshot[k] = safe_json(v)
 
         self.last_event = {
             "event": "line",
             "filename": fname,
             "function": funcname,
             "line": lineno,
-            "locals": locals_snapshot
+            "locals": locals_snapshot,
+            "globals": globals_snapshot
         }
 
         # Stop if we've reached the target line
