@@ -1,6 +1,11 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-use std::process::Command;
 use serde_json::{json, Value};
+use serde::Deserialize;
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Child, ChildStdin, ChildStdout, ChildStderr, Command, Stdio};
+use tauri::State;
+use std::sync::Mutex;
+
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -74,12 +79,155 @@ fn get_file_tree() -> Result<Value, String> {
 }
 
 
+
+
+// ------------------------
+// Shared Tracer State
+// ------------------------
+struct Tracer {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    stderr: BufReader<std::process::ChildStderr>,
+    current_flow: Option<String>,
+}
+
+impl Tracer {
+    fn spawn(req: &TraceRequest) -> Result<Self, String> {
+        let python = std::env::var("PYTHON_BIN").unwrap_or("python3".to_string());
+        let script_path = "../tools/get_tracer.py";
+
+        let mut child = Command::new(&python)
+            .arg("-u")  // Unbuffered mode - critical for subprocess communication
+            .arg(script_path)
+            .arg("--entry_full_id")
+            .arg(&req.entry_full_id)
+            .arg("--args_json")
+            .arg(&req.args_json)
+            .arg("--stop_line")
+            .arg(req.stop_line.to_string())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env("PYTHONUNBUFFERED", "1")  // Also set env var for extra safety
+            .spawn()
+            .map_err(|e| format!("Failed to spawn Python process: {}", e))?;
+
+        let stdin = child.stdin.take().ok_or("Failed to open Python stdin")?;
+        let stdout = child.stdout.take().ok_or("Failed to capture Python stdout")?;
+        let stderr = child.stderr.take().ok_or("Failed to capture Python stderr")?;
+
+        Ok(Self {
+            child,
+            stdin,
+            stdout: BufReader::new(stdout),
+            stderr: BufReader::new(stderr),
+            // set current_flow to entry_full_id
+            current_flow: Some(req.entry_full_id.clone()),
+        })
+    }
+}
+
+// ------------------------
+// Tauri State Wrapper
+// ------------------------
+type SharedTracer = Mutex<Option<Tracer>>;
+
+// ------------------------
+// Trace Request Struct
+// ------------------------
+#[derive(Deserialize)]
+struct TraceRequest {
+    entry_full_id: String,
+    args_json: String,
+    stop_line: i32,
+}
+
+
+// ------------------------
+// Main Tauri Command
+// ------------------------
+#[tauri::command]
+fn get_tracer_data(
+    req: TraceRequest,
+    tracer_state: State<SharedTracer>
+) -> Result<Value, String> {
+    use std::io::BufRead;
+
+    println!("[Rust] get_tracer_data called");
+    println!("[Rust] req.entry_full_id = {}", req.entry_full_id);
+    println!("[Rust] req.args_json = {}", req.args_json);
+    println!("[Rust] req.stop_line = {}", req.stop_line);
+
+    // Acquire lock
+    let mut tracer_guard = tracer_state.lock().unwrap();
+    println!("[Rust] tracer alive = {}", tracer_guard.is_some());
+
+    let first_time = tracer_guard.is_none();
+
+    // Spawn tracer if not alive
+    if first_time {
+        println!("[Rust] Spawning tracer…");
+        *tracer_guard = Some(Tracer::spawn(&req)?);
+    }
+
+    let tracer = tracer_guard.as_mut().unwrap();
+    println!("[Rust] Current flow = {:?}", tracer.current_flow);
+
+
+    // If new flow, tell Python to reset and start new flow
+    if tracer.current_flow.as_deref() != Some(&req.entry_full_id) {
+        println!("[Rust] New flow detected, sending start_flow");
+    }
+
+    // Send continue command
+    if !first_time {
+        println!("[Rust] Sending continue_to {}", req.stop_line);
+
+        writeln!(tracer.stdin, "{}", req.stop_line)
+        .map_err(|e| format!("Failed to write continue_to to Python stdin: {}", e))?;
+
+        tracer.stdin.flush().map_err(|e| format!("Failed to flush stdin: {}", e))?;
+
+      } else {
+        println!("[Rust] First time — not sending continue_to");
+    }
+
+    // Read from stderr (Python writes events to stderr)
+    let mut line = String::new();
+    println!("[Rust] Reading event from Python stderr (stop_line={})...", req.stop_line);
+    tracer.stderr.read_line(&mut line)
+        .map_err(|e| {
+            // Check if process died
+            if let Ok(Some(status)) = tracer.child.try_wait() {
+                format!("Python process exited with status: {:?} while reading stderr. Error: {}", status, e)
+            } else {
+                format!("Failed to read Python stderr: {} (stop_line={})", e, req.stop_line)
+            }
+        })?;
+
+    println!("[Rust] Received from Python: {}", line);
+    if line.trim().is_empty() {
+        return Err("Empty response from Python".to_string());
+    }
+
+    let event_json: Value = serde_json::from_str(&line)
+        .map_err(|e| format!("Failed to parse JSON from Python: {} -- line: {}", e, line))?;
+
+    println!("[Rust] Parsed event JSON = {}", event_json);
+    Ok(event_json)    
+}
+
+
+
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     println!("[flowlens] run: starting tauri builder");
     tauri::Builder::default()
+        .manage(Mutex::new(None::<Tracer>))  // register the shared tracer state
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, get_flows, get_file_tree])
+        .invoke_handler(tauri::generate_handler![greet, get_flows, get_file_tree, get_tracer_data])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

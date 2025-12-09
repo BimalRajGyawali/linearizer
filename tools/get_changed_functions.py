@@ -181,7 +181,7 @@ def make_full_id(rel_file: str, fn_name: str) -> str:
 
 
 # ----------------- function extraction & saving ----------------- #
-def save_function(path: str, name: str, body: str, repo_root: Optional[str] = None):
+def save_function(path: str, name: str, body: str, start_line: int, repo_root: Optional[str] = None):
     file_path: str = "functions.json"
     json_path = Path(file_path)
     if json_path.exists():
@@ -202,7 +202,11 @@ def save_function(path: str, name: str, body: str, repo_root: Optional[str] = No
     rel = rel.replace("\\", "/")
 
     key = make_full_id(rel, name)
-    data[key] = body
+    data[key] = {
+        "body": body,
+        "start_line": start_line,
+        "file_path": path  # Also save absolute path for easier matching
+    }
 
     with json_path.open("w") as f:
         json.dump(data, f, indent=2)
@@ -271,9 +275,11 @@ def extract_functions_from_file(path: str, function_names: set, repo_root: Optio
     results = {}
     current_name = None
     current_body = []
+    current_start_line = 0
     imports_map = parse_imports(path)
     local_funcs = set()
-    for line in text:
+    for i, line in enumerate(text):
+        lineno = i + 1
         m = PY_FUNC_DEF.match(line)
         if m:
             name = m.group(1)
@@ -281,10 +287,11 @@ def extract_functions_from_file(path: str, function_names: set, repo_root: Optio
                 full_body = "\n".join([qualify_calls_in_line(l, imports_map, local_funcs, path, repo_root) for l in current_body])
                 key = make_full_id(path, current_name)
                 results[key] = full_body
-                save_function(path, current_name, full_body, repo_root)
+                save_function(path, current_name, full_body, current_start_line, repo_root)
             current_name = name if name in function_names else None
             if current_name:
                 local_funcs.add(current_name)
+                current_start_line = lineno
             current_body = [line] if current_name else []
         elif current_name:
             current_body.append(line)
@@ -292,7 +299,7 @@ def extract_functions_from_file(path: str, function_names: set, repo_root: Optio
         full_body = "\n".join([qualify_calls_in_line(l, imports_map, local_funcs, path, repo_root) for l in current_body])
         key = make_full_id(path, current_name)
         results[key] = full_body
-        save_function(path, current_name, full_body, repo_root)
+        save_function(path, current_name, full_body, current_start_line, repo_root)
     return results
 
 

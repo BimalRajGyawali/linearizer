@@ -6,8 +6,14 @@ import FlowPanel from "./components/HighlightedFlowPanel";
 
 export default function App() {
   const [parents, setParents] = useState<string[]>([]);
-  const [functions, setFunctions] = useState<Record<string, string>>({});
+  interface FunctionData {
+    body: string;
+    start_line: number;
+    file_path: string;
+  }
+  const [functions, setFunctions] = useState<Record<string, FunctionData>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [traceEvents, setTraceEvents] = useState<any[]>([]);
 
   // Sidebar width and dragging
   const [sidebarWidth, setSidebarWidth] = useState(280);
@@ -37,6 +43,7 @@ export default function App() {
       console.error("Error fetching flows:", e);
     }
   };
+
 
   useEffect(() => {
     fetchFlows();
@@ -86,21 +93,19 @@ export default function App() {
   }, [collapsed]);
 
   // When a function call is clicked inside FlowPanel
-const handleFunctionClick = useCallback((fullId: string) => {
-  // extract file path before ::
-  let path = fullId.split("::")[0]; // "/backend/services/analytics_processor.py"
+  const handleFunctionClick = useCallback((fullId: string) => {
+    // extract file path before ::
+    let path = fullId.split("::")[0]; // "/backend/services/analytics_processor.py"
 
-  // Remove leading slash if your FileNode paths are relative to repo root
-  if (path.startsWith("/")) path = path.slice(1);
+    // Remove leading slash if your FileNode paths are relative to repo root
+    if (path.startsWith("/")) path = path.slice(1);
 
-  // Optional: prepend repo root if needed
-  const repoRoot = "/home/bimal/Documents/ucsd/research/code/trap/";
-  const fullPath = repoRoot + path;
+    // Optional: prepend repo root if needed
+    const repoRoot = "/home/bimal/Documents/ucsd/research/code/trap/";
+    const fullPath = repoRoot + path;
 
-  console.log("Highlighting file at:", fullPath);
-
-  fileExplorerRef.current?.highlightFile(fullPath);
-}, []);
+    fileExplorerRef.current?.highlightFile(fullPath);
+  }, []);
   return (
     <div
       style={{
@@ -182,6 +187,7 @@ const handleFunctionClick = useCallback((fullId: string) => {
         />
       )}
 
+      {/* CENTER PANEL */}
       {/* CENTER PANEL */}
       <FlowPanel
         parents={parents}
