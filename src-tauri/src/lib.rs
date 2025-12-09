@@ -98,6 +98,7 @@ impl Tracer {
         let script_path = "../tools/get_tracer.py";
 
         let mut child = Command::new(&python)
+            .arg("-u")  // Unbuffered mode - critical for subprocess communication
             .arg(script_path)
             .arg("--entry_full_id")
             .arg(&req.entry_full_id)
@@ -108,6 +109,7 @@ impl Tracer {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .env("PYTHONUNBUFFERED", "1")  // Also set env var for extra safety
             .spawn()
             .map_err(|e| format!("Failed to spawn Python process: {}", e))?;
 
@@ -191,19 +193,20 @@ fn get_tracer_data(
         println!("[Rust] First time — not sending continue_to");
     }
 
-
-    // Read Python stdout for the JSON event
     let mut line = String::new();
     tracer.stderr.read_line(&mut line)
         .map_err(|e| format!("Failed to read Python stdout: {}", e))?;
 
-//     let json_str = &line["TRACER:".len()..];
+    println!("[Rust] Received from Python: {}", line);
+    if line.trim().is_empty() {
+        return Err("Empty response from Python".to_string());
+    }
 
     let event_json: Value = serde_json::from_str(&line)
         .map_err(|e| format!("Failed to parse JSON from Python: {} -- line: {}", e, line))?;
 
     println!("[Rust] Parsed event JSON = {}", event_json);
-    Ok(event_json)
+    Ok(event_json)    
 }
 
 

@@ -13,8 +13,7 @@ import bdb
 # --------------------------
 
 def send_event(event_json):
-    sys.stderr.write(json.dumps(event_json, separators=(",", ":")) + "\n")
-    sys.stderr.flush()
+    print(json.dumps(event_json, separators=(",", ":")), flush=True, file=sys.stderr)
 
 
 def import_module_from_path(repo_root: str, rel_path: str):
@@ -132,7 +131,6 @@ def main():
         "--stop_line",
         required=True,
         type=int
-        # default=100
     )
     args = parser.parse_args()
 
@@ -141,6 +139,12 @@ def main():
     args_json = args.args_json
     stop_line = args.stop_line
     #
+    # print(f"stop_line: {stop_line}")
+    # print(f"args_json: {args_json}")
+    # print(f"entry_full_id: {entry_full_id}")
+    # print(f"repo_root: {repo_root}")
+    
+
     with open("debugger_input.log", "a") as f:
         f.write(f"{stop_line}\n")
     args_list = []
