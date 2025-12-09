@@ -247,27 +247,9 @@ If functions aren't appearing:
 - Check that changed functions are Python functions (`.py` files)
 - Verify the repository path is correct
 
-## Future Improvements
 
-Potential enhancements:
-- Support for multiple repositories
-- Configuration file for repository paths
-- Better error handling and user feedback
-- Support for other languages (not just Python)
-- Export/import of flow visualizations
-- Search and filter functionality
 
-## License
 
-[Add your license here]
-
-## Contributing
-
-[Add contribution guidelines here]
-
-## Authors
-
-- Bimal (based on the workspace path)
 
 ---
 
