@@ -11,6 +11,7 @@ interface TraceEvent {
   function: string;
   line?: number;
   locals?: Record<string, any>;
+  globals?: Record<string, any>;
   value?: any;
   result?: any;
 }
