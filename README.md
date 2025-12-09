@@ -95,11 +95,6 @@ Run the application in development mode:
 npm run tauri dev
 ```
 
-This will:
-- Start the Vite dev server for the frontend
-- Compile and run the Rust backend
-- Launch the Tauri application window
-
 ## How It Works
 
 ### 1. Function Detection
