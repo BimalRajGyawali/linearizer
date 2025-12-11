@@ -354,7 +354,7 @@ const FlowPanel: React.FC<FlowPanelProps> = ({
         // Trace the line (treat function calls as normal lines)
         const traceReq = {
           entry_full_id: effectiveEntryFullId,
-          stop_line: line,
+          stop_line: line + 1,
           args_json: JSON.stringify(effectiveArgs),
           filename,
         };
@@ -362,6 +362,7 @@ const FlowPanel: React.FC<FlowPanelProps> = ({
         let event: TraceEvent;
         try {
           event = await invoke<TraceEvent>("get_tracer_data", { req: traceReq });
+          event.line = line;
         } catch (err: any) {
           // If the invoke fails (e.g., timeout, process died), create an error event
           console.error("Error calling tracer:", err);
