@@ -359,7 +359,21 @@ const FlowPanel: React.FC<FlowPanelProps> = ({
           filename,
         };
         console.log(`Trace request ${JSON.stringify(traceReq)}, entryFullId: ${effectiveEntryFullId}`);
-        const event = await invoke<TraceEvent>("get_tracer_data", { req: traceReq });
+        let event: TraceEvent;
+        try {
+          event = await invoke<TraceEvent>("get_tracer_data", { req: traceReq });
+        } catch (err: any) {
+          // If the invoke fails (e.g., timeout, process died), create an error event
+          console.error("Error calling tracer:", err);
+          event = {
+            event: "error",
+            error: err?.toString() || "Failed to communicate with Python tracer",
+            traceback: err?.message || "The tracer process may have crashed or timed out.",
+            line: line,
+            filename: filename,
+          };
+        }
+        
         event.line = line;
         // Ensure error events have filename for proper filtering
         if (event.event === "error" && !event.filename) {
@@ -783,7 +797,38 @@ const FlowPanel: React.FC<FlowPanelProps> = ({
                         // Resolve args using parent function's locals and match to target function signature
                         // CRITICAL: We MUST have targetFunctionFullId to filter by signature
                         console.log(`[Line Click] Resolving args for function: ${targetFunctionFullId}`);
-                        const resolvedArgs = await resolveCallArgs(argsToResolve, parentEvent.locals, targetFunctionFullId);
+                        
+                        let resolvedArgs;
+                        try {
+                          // Add timeout to prevent hanging
+                          const timeoutPromise = new Promise((_, reject) => 
+                            setTimeout(() => reject(new Error("Timeout resolving function arguments")), 10000)
+                          );
+                          resolvedArgs = await Promise.race([
+                            resolveCallArgs(argsToResolve, parentEvent.locals, targetFunctionFullId),
+                            timeoutPromise
+                          ]) as { args: any[]; kwargs: Record<string, any> } | null;
+                        } catch (err: any) {
+                          console.error(`[Line Click] Error resolving args for ${targetFunctionFullId}:`, err);
+                          // Create an error event to show to the user
+                          const errorEvent: TraceEvent = {
+                            event: "error",
+                            error: `Failed to resolve arguments: ${err?.message || err?.toString() || "Unknown error"}`,
+                            traceback: "The function signature lookup may have timed out or failed.",
+                            line: currentLineNo,
+                            filename: file_path,
+                          };
+                          setTraceEvents((prev) => {
+                            const exists = prev.some(e => 
+                              e.event === "error" && 
+                              e.line === errorEvent.line && 
+                              e.error === errorEvent.error &&
+                              e.filename === errorEvent.filename
+                            );
+                            return exists ? prev : [...prev, errorEvent];
+                          });
+                          return;
+                        }
                         
                         if (!resolvedArgs) {
                           console.error(`[Line Click] Failed to resolve args for ${targetFunctionFullId}`);
