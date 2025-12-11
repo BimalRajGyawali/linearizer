@@ -1,7 +1,7 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 use serde_json::{json, Value};
 use serde::Deserialize;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, ChildStderr, Command, Stdio};
 use tauri::State;
 use std::sync::Mutex;
@@ -171,48 +171,125 @@ fn get_tracer_data(
         *tracer_guard = Some(Tracer::spawn(&req)?);
     }
 
+    // Check if we need to spawn a new tracer for a different function
+    let needs_new_tracer = if let Some(ref tracer) = *tracer_guard {
+        tracer.current_flow.as_deref() != Some(&req.entry_full_id)
+    } else {
+        false
+    };
+
+    // If new flow detected, kill old tracer and spawn new one
+    if needs_new_tracer {
+        println!("[Rust] New flow detected (old: {:?}, new: {}), spawning new tracer", 
+                 tracer_guard.as_ref().unwrap().current_flow, req.entry_full_id);
+        
+        // Kill the old tracer process
+        if let Some(ref mut old_tracer) = *tracer_guard {
+            let _ = old_tracer.child.kill(); // Ignore errors if already dead
+            let _ = old_tracer.child.wait(); // Wait for it to finish
+        }
+        
+        // Spawn new tracer for the new function
+        *tracer_guard = Some(Tracer::spawn(&req)?);
+    }
+
     let tracer = tracer_guard.as_mut().unwrap();
     println!("[Rust] Current flow = {:?}", tracer.current_flow);
 
-
-    // If new flow, tell Python to reset and start new flow
-    if tracer.current_flow.as_deref() != Some(&req.entry_full_id) {
-        println!("[Rust] New flow detected, sending start_flow");
-    }
+    // Determine if this is the first call for this tracer
+    // It's the first call if: this is the first time overall, OR we just spawned a new tracer
+    let is_first_call = first_time || needs_new_tracer;
 
     // Send continue command
-    if !first_time {
+    if !is_first_call {
         println!("[Rust] Sending continue_to {}", req.stop_line);
 
         writeln!(tracer.stdin, "{}", req.stop_line)
         .map_err(|e| format!("Failed to write continue_to to Python stdin: {}", e))?;
 
         tracer.stdin.flush().map_err(|e| format!("Failed to flush stdin: {}", e))?;
-
-      } else {
-        println!("[Rust] First time — not sending continue_to");
+    } else {
+        println!("[Rust] First call for this function — Python will send initial event");
     }
 
     // Read from stderr (Python writes events to stderr)
+    // Use a timeout to prevent indefinite blocking
     let mut line = String::new();
     println!("[Rust] Reading event from Python stderr (stop_line={})...", req.stop_line);
-    tracer.stderr.read_line(&mut line)
-        .map_err(|e| {
+    
+    // Check if process is still alive before reading
+    if let Ok(Some(status)) = tracer.child.try_wait() {
+        return Err(format!("Python process exited with status: {:?} before reading event", status));
+    }
+    
+    // Try to read with a timeout by checking process status periodically
+    // Since read_line is blocking, we'll use a simple approach: check process status first
+    // and rely on Python's timeout (30s) to send an error event if it hangs
+    let read_result = tracer.stderr.read_line(&mut line);
+    
+    // After attempting to read, check if process died
+    if let Ok(Some(status)) = tracer.child.try_wait() {
+        // Process died - check if we got any data
+        if line.trim().is_empty() {
+            return Err(format!("Python process exited with status: {:?} before sending event", status));
+        }
+        // If we got some data, continue processing it
+    }
+    
+    // Read one line - Python should send JSON on a single line
+    match read_result {
+        Ok(0) => {
+            // EOF - process might have closed stderr
+            if let Ok(Some(status)) = tracer.child.try_wait() {
+                return Err(format!("Python process exited with status: {:?} before sending event", status));
+            }
+            return Err("Python stderr closed unexpectedly (EOF)".to_string());
+        }
+        Ok(_) => {
+            // Successfully read a line
+        }
+        Err(e) => {
             // Check if process died
             if let Ok(Some(status)) = tracer.child.try_wait() {
-                format!("Python process exited with status: {:?} while reading stderr. Error: {}", status, e)
-            } else {
-                format!("Failed to read Python stderr: {} (stop_line={})", e, req.stop_line)
+                return Err(format!("Python process exited with status: {:?} while reading stderr. Error: {}", status, e));
             }
-        })?;
+            return Err(format!("Failed to read Python stderr: {}", e));
+        }
+    }
 
-    println!("[Rust] Received from Python: {}", line);
-    if line.trim().is_empty() {
+let line = line.trim();
+println!(
+    "[Rust] Received from Python (len={}): {}",
+    line.len(),
+    if line.len() > 200 {
+        format!("{}...", &line[..200])
+    } else {
+        line.to_string()
+    }
+);
+
+    if line.is_empty() {
         return Err("Empty response from Python".to_string());
     }
 
+    // Try to parse as JSON
     let event_json: Value = serde_json::from_str(&line)
-        .map_err(|e| format!("Failed to parse JSON from Python: {} -- line: {}", e, line))?;
+        .map_err(|e| {
+            // If parsing fails, check if it's an error message
+            if line.starts_with("Exception") || line.starts_with("Traceback") || line.starts_with("Error:") {
+                format!("Python sent error output instead of JSON:\n{}", line)
+            } else {
+                format!(
+                    "Failed to parse JSON from Python: {} -- received: {}",
+                    e,
+                    if line.len() > 500 {
+                        format!("{}...", &line[..500])
+                    } else {
+                        line.to_string()
+                    }
+                )
+            }
+        })?;
 
     println!("[Rust] Parsed event JSON = {}", event_json);
     Ok(event_json)    
@@ -221,13 +298,44 @@ fn get_tracer_data(
 
 
 
+#[tauri::command]
+fn get_function_signature(entry_full_id: String) -> Result<Value, String> {
+    println!("[Rust] get_function_signature called with entry_full_id = {}", entry_full_id);
+    
+    let repo = "/home/bimal/Documents/ucsd/research/code/trap";
+    let python = std::env::var("PYTHON_BIN").unwrap_or("python3".to_string());
+    let script_path = "../tools/get_tracer.py";
+    
+    let output = Command::new(&python)
+        .arg("-u")
+        .arg(script_path)
+        .arg("--repo_root")
+        .arg(&repo)
+        .arg("--entry_full_id")
+        .arg(&entry_full_id)
+        .arg("--get_signature")
+        .output()
+        .map_err(|e| format!("Failed to run Python script: {}", e))?;
+    
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    
+    if !output.status.success() {
+        return Err(format!("Python script error: {}", stdout));
+    }
+    
+    let signature: Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse signature JSON: {} -- received: {}", e, stdout))?;
+    
+    Ok(signature)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     println!("[flowlens] run: starting tauri builder");
     tauri::Builder::default()
         .manage(Mutex::new(None::<Tracer>))  // register the shared tracer state
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, get_flows, get_file_tree, get_tracer_data])
+        .invoke_handler(tauri::generate_handler![greet, get_flows, get_file_tree, get_tracer_data, get_function_signature])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -7,6 +7,7 @@ import types
 import traceback
 import threading
 import bdb
+import inspect
 
 # --------------------------
 # Helpers
@@ -44,6 +45,30 @@ def safe_json(value):
     except Exception:
         return f"<unserializable {type(value).__name__}>"
 
+
+def get_function_signature(repo_root: str, entry_full_id: str):
+    """Get the function signature (parameter names) for a given function."""
+    try:
+        if "::" not in entry_full_id:
+            return {"error": "invalid entry id"}
+        
+        rel_path, fn_name = entry_full_id.split("::", 1)
+        module = import_module_from_path(repo_root, rel_path)
+        func = getattr(module, fn_name, None)
+        
+        if func is None or not callable(func):
+            return {"error": f"function {fn_name} not found"}
+        
+        sig = inspect.signature(func)
+        params = list(sig.parameters.keys())
+        
+        return {
+            "params": params,
+            "param_count": len(params)
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
 # --------------------------
 # Persistent Debugger
 # --------------------------
@@ -56,6 +81,7 @@ class PersistentDebugger(bdb.Bdb):
         self.last_event = None
         self.running_thread = None
         self.target_file = None
+        self.thread_exception = None  # Store exceptions from the debugger thread
 
     def user_line(self, frame):
         lineno = frame.f_lineno
@@ -128,16 +154,49 @@ class PersistentDebugger(bdb.Bdb):
     def wait_for_event(self, timeout=None):
         return self.ready_event.wait(timeout=timeout)
 
+    def user_return(self, frame, return_value):
+        """Called when a function returns."""
+        # If function completes before reaching target line, create an event
+        if self.target_line is not None and self.last_event is None:
+            # Function completed before we could capture an event
+            # Create a completion event
+            fname = os.path.abspath(frame.f_code.co_filename)
+            if fname == self.target_file:
+                self.last_event = {
+                    "event": "return",
+                    "filename": fname,
+                    "function": frame.f_code.co_name,
+                    "line": frame.f_lineno,
+                    "locals": {k: safe_json(v) for k, v in frame.f_locals.items()},
+                    "return_value": safe_json(return_value)
+                }
+                self.ready_event.set()
+
     def run_function_once(self, fn, args=None, kwargs=None):
         args = args or []
         kwargs = kwargs or {}
-        self.running_thread = threading.Thread(
-            target=lambda: self.runctx(
-                "fn(*args, **kwargs)",
-                globals={"fn": fn, "args": args, "kwargs": kwargs},
-                locals={}
-            )
-        )
+        
+        def run_with_error_handling():
+            try:
+                self.runctx(
+                    "fn(*args, **kwargs)",
+                    globals={"fn": fn, "args": args, "kwargs": kwargs},
+                    locals={}
+                )
+                # If we get here, function completed normally
+                # Check if we need to set ready_event (in case function completed before target line)
+                if not self.ready_event.is_set() and self.target_line is not None:
+                    # Function completed but we never reached target line
+                    self.ready_event.set()
+            except Exception as e:
+                # Store the exception
+                self.thread_exception = e
+                # Set ready_event so wait_for_event doesn't hang
+                self.ready_event.set()
+                # Do not send event here - let main thread handle it
+                # Do not re-raise here, let the main thread handle it via wait_for_event
+        
+        self.running_thread = threading.Thread(target=run_with_error_handling)
         self.running_thread.start()
         # let the debugger start paused until the first continue_until
         self.step_event.clear()
@@ -164,10 +223,25 @@ def main():
     )
     parser.add_argument(
         "--stop_line",
-        required=True,
+        required=False,
         type=int
     )
+    parser.add_argument(
+        "--get_signature",
+        action="store_true",
+        help="Get function signature instead of tracing"
+    )
     args = parser.parse_args()
+    
+    # If --get_signature is set, return signature and exit
+    if args.get_signature:
+        result = get_function_signature(args.repo_root, args.entry_full_id)
+        print(json.dumps(result), flush=True)
+        sys.exit(0)
+    
+    # Otherwise, require stop_line
+    if args.stop_line is None:
+        parser.error("--stop_line is required when not using --get_signature")
 
     repo_root = args.repo_root
     entry_full_id = args.entry_full_id
@@ -227,9 +301,55 @@ def main():
 
     # Run until initial stop_line
     dbg.continue_until(stop_line)
-    dbg.wait_for_event()
-
-    send_event(dbg.last_event)
+    
+    # Wait for event with timeout to detect if thread died
+    if not dbg.wait_for_event(timeout=30.0):
+        # Check if thread is still alive
+        if not dbg.running_thread.is_alive():
+            # Thread died, check if there's an exception stored
+            if dbg.thread_exception:
+                error_event = {
+                    "event": "error",
+                    "error": str(dbg.thread_exception),
+                    "traceback": traceback.format_exc()
+                }
+            else:
+                error_event = {
+                    "event": "error",
+                    "error": "Function execution thread died before reaching target line",
+                    "traceback": "The function may have raised an exception or exited unexpectedly."
+                }
+            send_event(error_event)
+            sys.exit(1)
+        else:
+            # Thread alive but no event - timeout
+            error_event = {
+                "event": "error",
+                "error": f"Timeout waiting for function to reach line {stop_line}",
+                "traceback": "The function may be stuck in an infinite loop or waiting for input."
+            }
+            send_event(error_event)
+            sys.exit(1)
+    
+    # Check if there's a stored exception
+    if dbg.thread_exception:
+        error_event = {
+            "event": "error",
+            "error": str(dbg.thread_exception),
+            "traceback": traceback.format_exc()
+        }
+        send_event(error_event)
+    elif dbg.last_event:
+        # Send the event (could be regular event or error event from exception handler)
+        send_event(dbg.last_event)
+    else:
+        # No event was set - this shouldn't happen but send an error
+        error_event = {
+            "event": "error",
+            "error": f"No event was generated when reaching line {stop_line}",
+            "traceback": "The debugger may not have stopped at the expected line. The function may have completed before reaching the target line."
+        }
+        send_event(error_event)
 
     # Interactive stepping
     while True:
