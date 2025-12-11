@@ -213,7 +213,6 @@ fn get_tracer_data(
     }
 
     // Read from stderr (Python writes events to stderr)
-    // Use a timeout to prevent indefinite blocking
     let mut line = String::new();
     println!("[Rust] Reading event from Python stderr (stop_line={})...", req.stop_line);
     
@@ -222,18 +221,19 @@ fn get_tracer_data(
         return Err(format!("Python process exited with status: {:?} before reading event", status));
     }
     
-    // Try to read with a timeout by checking process status periodically
-    // Since read_line is blocking, we'll use a simple approach: check process status first
-    // and rely on Python's timeout (30s) to send an error event if it hangs
+    // NOTE: read_line() is blocking and will wait indefinitely for data.
+    // The Python script has a 30s timeout, but if it hangs before that,
+    // this will block forever. Consider using async I/O or a timeout mechanism.
+    // For now, we rely on Python's timeout to send an error event.
     let read_result = tracer.stderr.read_line(&mut line);
     
-    // After attempting to read, check if process died
+    // After reading, check if process died
     if let Ok(Some(status)) = tracer.child.try_wait() {
-        // Process died - check if we got any data
+        // Process died - check if we got any data before it died
         if line.trim().is_empty() {
-            return Err(format!("Python process exited with status: {:?} before sending event", status));
+            return Err(format!("Python process exited with status: {:?} before sending event. The process may have crashed or timed out.", status));
         }
-        // If we got some data, continue processing it
+        // If we got some data, continue processing it (might be a partial event)
     }
     
     // Read one line - Python should send JSON on a single line
@@ -241,9 +241,9 @@ fn get_tracer_data(
         Ok(0) => {
             // EOF - process might have closed stderr
             if let Ok(Some(status)) = tracer.child.try_wait() {
-                return Err(format!("Python process exited with status: {:?} before sending event", status));
+                return Err(format!("Python process exited with status: {:?} before sending event. stderr was closed.", status));
             }
-            return Err("Python stderr closed unexpectedly (EOF)".to_string());
+            return Err("Python stderr closed unexpectedly (EOF). The tracer process may have crashed.".to_string());
         }
         Ok(_) => {
             // Successfully read a line
@@ -251,9 +251,9 @@ fn get_tracer_data(
         Err(e) => {
             // Check if process died
             if let Ok(Some(status)) = tracer.child.try_wait() {
-                return Err(format!("Python process exited with status: {:?} while reading stderr. Error: {}", status, e));
+                return Err(format!("Python process exited with status: {:?} while reading stderr. Error: {}. The process may have crashed.", status, e));
             }
-            return Err(format!("Failed to read Python stderr: {}", e));
+            return Err(format!("Failed to read Python stderr: {}. The tracer may be unresponsive.", e));
         }
     }
 
